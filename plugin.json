@@ -1,7 +1,7 @@
 {
   "id": "hulu-music",
   "name": "葫芦音源",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "minAppVersion": "0.1.8",
   "main": "index.js",
   "playback": "stream",

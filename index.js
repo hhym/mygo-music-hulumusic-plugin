@@ -1779,23 +1779,67 @@ async function rdPrefetch(stations) {
 /* 严格探测：真去读几千字节，认得出播放器能解的格式才直连。
    广播台常在 HEAD 上撒谎（HEAD 200、GET 404），只看状态码不够。 */
 async function rdProbeStream(url, timeoutMs) {
+  let status = 0;
   try {
     const res = await fetch(url, {
       headers: { Range: "bytes=0-8191", "User-Agent": RD_UA },
       signal: AbortSignal.timeout(timeoutMs || 8000),
     });
-    const status = res.status;
-    const buf = new Uint8Array(await res.arrayBuffer().catch(() => new Uint8Array(0)));
-    if (status !== 200 && status !== 206) return { ok: false, status, bytes: buf.length, why: "HTTP " + status };
-    if (buf.length < 64) return { ok: false, status, bytes: buf.length, short: true, why: "服务端没给数据（" + buf.length + "B）" };
-    const d = detectAudio(buf);
-    if (!d || !d.ok) return { ok: false, status, bytes: buf.length, why: (d && d.why) || "读不出音频头" };
+    status = res.status;
+    if (status !== 200 && status !== 206) {
+      try { res.body && res.body.cancel && res.body.cancel(); } catch {}
+      return { ok: false, status, bytes: 0, why: "HTTP " + status };
+    }
+    /* ⚠️⚠️ 这里绝对不能用 res.arrayBuffer()。
+       直播台是**永远不会结束**的流：不认 Range 的（蜻蜓老台一律回 200 + chunked）
+       压根不会停在 8192 字节上，arrayBuffer 会一直挂着直到超时 abort，
+       于是探测永远失败 → 插件抛 unavailable → MyGo 只显示「这首歌无法播放」。
+       实测 lhttp.qingting.fm/live/4804/64k.mp3 就是这种：Range 被忽略、
+       回 200 全量、HEAD 直接 400，但里头是干净的 MPEG1 Layer III。
+       改成读到 ~8KB 就主动 cancel，跟服务端认不认 Range 无关。 */
+    const chunks = [];
+    let total = 0;
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    if (reader) {
+      const deadline = Date.now() + 4000;
+      while (total < 8192 && Date.now() < deadline) {
+        const r = await reader.read().catch(() => ({ done: true }));
+        if (r.done) break;
+        if (!r.value || !r.value.length) continue;
+        chunks.push(r.value);
+        total += r.value.length;
+      }
+      try { reader.cancel && reader.cancel(); } catch {}
+    } else {
+      const buf = new Uint8Array(await res.arrayBuffer().catch(() => new Uint8Array(0)));
+      if (buf.length) { chunks.push(buf); total = buf.length; }
+    }
+    const all = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { all.set(c, off); off += c.length; }
+    if (all.length < 64) return { ok: false, status, bytes: all.length, short: true, why: "服务端没给数据（" + all.length + "B）" };
+    const d = detectAudio(all);
+    if (!d || !d.ok) return { ok: false, status, bytes: all.length, why: (d && d.why) || "读不出音频头" };
+    /* 干净 = 第一个字节就是合法容器/帧。前头有几十字节垃圾的流（蜻蜓部分台
+       首字节 d1 fd…，要到第 26 字节才是 ff fb 帧）直连给解码器会崩，
+       这类即便探测出 mp3 也得走转码。 */
+    const b = all;
+    const clean =
+      (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) || // ID3
+      (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) || // 裸 MPEG 帧
+      (b[0] === 0x1a && b[1] === 0x45) || // EBML
+      (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67) || // OggS
+      (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61) || // fLaC
+      (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46) || // RIFF
+      (b.length >= 8 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70); // ftyp
     const map = { mp4: "m4a", webm: "" };
     const fmt = map[d.fmt] !== undefined ? map[d.fmt] : d.fmt;
-    if (!fmt || RD_TYPES.indexOf(fmt) < 0) return { ok: false, status, bytes: buf.length, why: "格式 " + d.fmt + " 播放器不认" };
-    return { ok: true, fmt, status, bytes: buf.length };
+    if (!fmt || RD_TYPES.indexOf(fmt) < 0) return { ok: false, status, bytes: all.length, clean, why: "格式 " + d.fmt + " 播放器不认" };
+    return { ok: true, fmt, status, bytes: all.length, clean };
   } catch (e) {
-    return { ok: false, why: String((e && e.message) || "连不上").slice(0, 40) };
+    /* 超时/断连也要把已经拿到的状态带出去：
+       服务端 2xx 说明这台北上广能播，只是我们这边线路慢，调用方据此退回直连。 */
+    return { ok: false, status, bytes: 0, why: String((e && e.message) || "连不上").slice(0, 40) };
   }
 }
 
@@ -6140,9 +6184,48 @@ function proxyArg() {
   return PROXY_CACHE ? ["-http_proxy", PROXY_CACHE] : [];
 }
 
+/* ============================================================
+ * 本机默认代理（127.0.0.1:7890）到底开没开
+ * ------------------------------------------------------------
+ * 设置留空时按老规则默认走 127.0.0.1:7890。可一旦用户没跑 Clash，
+ * ffmpeg 就拿着这个死代理去连，日志只有一句
+ *   Connection refused → 进程秒退 → 转码永远「起不来」
+ * 表现就是「电台播不了」，而且跟 ffmpeg 装没装完全无关。
+ * 插件自己的 fetch 一直是直连的，只有 ffmpeg 被强制套代理，两边还不一致。
+ * 这里给默认地址做一次性端口探测（结果缓存到进程结束）：
+ * 开着就照旧用代理，没开就直连。
+ * ============================================================ */
+let PROXY_LIVE = null;
+async function proxyPortLive() {
+  if (PROXY_LIVE !== null) return PROXY_LIVE;
+  try {
+    await fetch("http://127.0.0.1:7890/", { signal: AbortSignal.timeout(1500) });
+    PROXY_LIVE = true;   // 有 HTTP 响应（哪怕是 4xx/坏网关），说明端口有人听
+  } catch (e) {
+    const s = String((e && e.cause && e.cause.code) || (e && e.message) || e);
+    /* 只有明确的「拒绝」或「超时」才判死：端口没人听时内核直接 RST。
+       其它错误（DNS、奇怪的超时实现）保守当作有代理，免得白白丢掉用户配好的代理。 */
+    PROXY_LIVE = !/ECONNREFUSED|refused|TIMEDOUT|timeout/i.test(s);
+  }
+  trace("默认代理探测", "7890 live=" + PROXY_LIVE);
+  return PROXY_LIVE;
+}
+
+/** ffmpeg 用的代理参数：配了地址就用；留空时先确认默认端口真开着 */
+async function proxyArgChecked() {
+  if (PROXY_CACHE === null) PROXY_CACHE = resolveProxy();
+  if (!PROXY_CACHE) return [];
+  if (/127\.0\.0\.1:7890|localhost:7890/i.test(PROXY_CACHE) && !(await proxyPortLive())) {
+    trace("默认代理没开，ffmpeg 直连", PROXY_CACHE);
+    return [];
+  }
+  return ["-http_proxy", PROXY_CACHE];
+}
+
 /** 设置变了要清缓存 */
 export function resetProxyCache() {
   PROXY_CACHE = null;
+  try { PROXY_LIVE = null; } catch {}
 }
 
 /** MyGo 在设置项改动后会调这个（如果它调用的话），这里做兼容 */
@@ -6229,7 +6312,7 @@ async function serveWithFfmpeg(sourceUrl, userAgent, bitRate = 128, extraHeaders
     ...(extraHeaders
       ? ["-headers", Object.entries(extraHeaders).map(([k, v]) => k + ": " + v + "\r\n").join("")]
       : []),
-    ...proxyArg(),
+    ...(await proxyArgChecked()),
     "-i", sourceUrl,
     "-vn",
     "-c:a", "libmp3lame",
@@ -6894,6 +6977,12 @@ async function _streamInner({ id, quality }) {
     /* aac 一律先转码：里面混着 HE-AAC（SBR+PS），MyGo 的解码器直接报错 */
     const probe = await rdProbeStream(url, 5000);
     if (probe.ok) {
+      /* 头部带垃圾的平台（蜻蜓部分台）直连解码器必崩，探测出 mp3 也得转 */
+      if (probe.fmt === "mp3" && probe.clean === false) {
+        const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
+        if (served) return { url: served.url, type: "mp3" };
+        trace("rd 头部不干净且转码没起来", String(probe.bytes || 0) + "B");
+      }
       if (probe.fmt === "aac") {
         const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
         if (served) return { url: served.url, type: "mp3" };
