@@ -8244,6 +8244,20 @@ export async function home() {
   /* ③ 首页不再放「继续听」（2026-11-09 按用户要求去掉）。
      最近播放有侧边栏独立入口（page: recent），不需要在首页重复一遍。 */
 
+  /* ④ 网络电台（Radio Browser）—— 入口提到首页。
+     这里只给静态链接，一个请求都不发：心情台和「中国电台」点进去才拉目录，
+     首页本来就慢，不能再多个三秒。 */
+  sections.push({
+    title: "网络电台",
+    subtitle: "三万多台真实电台，直播直连，HLS 自动转码",
+    links: [
+      { title: "中国电台", subtitle: "1900+ 台 · 中国之声 / 省市音乐台", page: "rblist:country:CN:0" },
+    ]
+      .concat(RB_MOODS.map((m) => ({ title: m.name, subtitle: m.desc, page: "rblist:mood:" + m.id + ":0" })))
+      .concat([{ title: "全部目录", subtitle: "按流派 / 国家 / 语言浏览", page: "radio" }]),
+    empty: "目录暂时连不上",
+  });
+
   if (!sections.length) {
     sections.push({ title: "葫芦音源", empty: "先去搜索页找首歌吧" });
   }
