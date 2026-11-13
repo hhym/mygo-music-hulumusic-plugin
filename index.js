@@ -5896,6 +5896,38 @@ function settingText(key) {
 }
 
 /** 填 0 / off / 关 就关掉转码（跟 proxyMode 那套写法保持一致） */
+/* 需要转码、但 ffmpeg 没起来时的统一说法。
+   ⚠️ 动作必须放在最前面：MyGo 播放栏只显示一行，长了就 "…" 截断，
+      把「点允许运行程序」写在后面用户根本看不见。 */
+function transcodeUnavailableError(reason) {
+  return new Error(
+    "要 ffmpeg 转码：请在插件设置点「允许运行程序」，再确认 ffmpeg 路径。" +
+    "这个台" + (reason || "播放器自己解不了") + "。"
+  );
+}
+
+/* 自检：能不能真的启动 ffmpeg。只有真正 spawn 一次才知道权限给没给：
+   MyGo 拒绝授权时抛的是 "the listener hasn't allowed this plugin to start programs"。 */
+async function spawnCheck(exe) {
+  let spawnFn;
+  try {
+    spawnFn = host && host.spawn;
+  } catch {}
+  if (typeof spawnFn !== "function") return { ok: false, text: "当前环境没有 host.spawn，起不了程序" };
+  if (!exe) return { ok: false, text: "没有可用的 ffmpeg 路径" };
+  try {
+    const proc = spawnFn(exe, ["-version"]);
+    try { if (proc && proc.kill) proc.kill(); } catch {}
+    try { if (proc && proc.closeStdin) proc.closeStdin(); } catch {}
+    return { ok: true, text: "能启动 ✓" };
+  } catch (e) {
+    const m = String((e && e.message) || e);
+    if (/hasn't allowed|not allowed/i.test(m)) return { ok: false, text: "❌ 还没允许：点下面说的「允许运行程序」" };
+    if (/ENOENT|not found|no such file|cannot find/i.test(m)) return { ok: false, text: "❌ 路径不存在：换一个完整路径" };
+    return { ok: false, text: "❌ 启动失败：" + m.slice(0, 70) };
+  }
+}
+
 function transcodeEnabled() {
   const v = settingText("transcode");
   if (!v) return true;
@@ -7007,17 +7039,17 @@ async function _streamInner({ id, quality }) {
            丢过去的结果就是一句「这首歌无法播放」，用户完全不知道是 ffmpeg 没就绪。
            这里抛普通 Error（不带 unavailable 之类的码）：MyGo 对未知错误
            会把 message 原样显示在播放栏，正好把原因告诉用户。 */
-        throw new Error(
-          "这个台的音频开头带 ICY 元数据（不是纯音频），必须用 ffmpeg 转码播放。" +
-          "本机没找到可用的 ffmpeg：请在插件设置里填「ffmpeg 路径」，或允许插件下载 ffmpeg 后重试。"
-        );
+        throw transcodeUnavailableError("开头带随机前缀（蜻蜓台常见），播放器自己解不了");
       }
-      if (probe.fmt === "aac") {
-        const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
-        if (served) return { url: served.url, type: "mp3" };
-        trace("rd aac 转码失败，直连", String(probe.bytes || 0) + "B");
+      if (probe.fmt === "mp3") return { url, type: "mp3" };
+      if (probe.fmt === "m4a") return { url, type: "m4a" };
+      /* aac 一律转码：里面混着 HE-AAC（SBR+PS），MyGo 的解码器直接报 go-aac/pcm 错误。
+         转不起来就别把原始地址丢过去 —— 那样只会显示一句看不懂的 SBR 报错。 */
+      if (!transcodeEnabled()) {
+        trace("转码被设置关掉，aac 直连", String(probe.bytes || 0) + "B");
+        return { url, type: probe.fmt };
       }
-      return { url, type: probe.fmt };
+      throw transcodeUnavailableError("是 HE-AAC 编码，MyGo 的解码器解不了");
     }
     trace("rd 直连不可播", probe.why || "");
     /* 读不到数据或格式不认：交给 ffmpeg 在用户本机拉流转 mp3 */
@@ -7042,10 +7074,7 @@ async function _streamInner({ id, quality }) {
     if (probe.status === 503 || /upstream connect|upstream|disconnect/i.test(String(probe.body || ""))) {
       throw fail("unavailable", "这个台的服务器现在没在播（" + (probe.body || probe.why || "503") + "），换一台吧");
     }
-    throw new Error(
-      "拉不到这个台的音频数据（" + (probe.why || "无响应") + "），需要 ffmpeg 在本机拉流。" +
-      "现在 ffmpeg 没能启动：请把「ffmpeg 路径」填全，并在授权提示里点「允许」。"
-    );
+    throw transcodeUnavailableError("的音频开头是随机前缀，播放器识别不了（" + (probe.why || "无响应") + "）");
   }
 
   if (s.startsWith("radio:")) {
@@ -8468,6 +8497,46 @@ export async function subscribeShow({ id, on }) {
   return null;
 }
 
+/* ============================================================
+ * 播放自检页：只查一件事 —— ffmpeg 到底卡在哪一步
+ * 用户看到的「这首歌无法播放」「开头带 ICY 元数据」都是终点，
+ * 这里把链条拆开：开关 → 路径 → 文件在不在 → 能不能启动。
+ * ============================================================ */
+async function diagPage() {
+  const rows = [];
+  rows.push({
+    title: "① 转码开关",
+    subtitle: transcodeEnabled() ? "已开启（留空或填 1）" : "已关闭（填了 0）—— 需要转码的台会播不出来",
+    page: "diag",
+  });
+  const custom = String(settingText("ffmpegPath") || "").trim();
+  rows.push({ title: "② 设置里的路径", subtitle: custom || "留空（自动查找）", page: "diag" });
+  let exe = "";
+  try {
+    exe = await resolveFfmpegPath();
+  } catch {}
+  rows.push({
+    title: "③ 实际找到的",
+    subtitle: exe || "没找到（填了路径还空着，多半是启动被权限拦住，看 ④）",
+    page: "diag",
+  });
+  const chk = await spawnCheck(exe || "ffmpeg");
+  rows.push({ title: "④ 能不能启动", subtitle: chk.text, page: "diag" });
+  if (!chk.ok) {
+    rows.push({
+      title: "怎么修",
+      subtitle: "插件设置页点「允许运行程序」，再把 ffmpeg 完整路径填进去（Windows 例：C:\\ffmpeg\\bin\\ffmpeg.exe），然后回本页重查",
+      page: "diag",
+    });
+  }
+  return {
+    title: "播放自检",
+    subtitle: "电台能不能播，全看 ffmpeg 这一步",
+    description: "蜻蜓系电台每次连接都会在音频帧前塞 2~90 字节随机前缀，播放器自己解不了，必须 ffmpeg 转一道。",
+    sections: [{ title: "检查结果", links: rows, empty: "没有结果" }],
+  };
+}
+
 export async function home() {
   const sections = [];
 
@@ -8537,7 +8606,10 @@ export async function home() {
       { title: "中国电台", subtitle: "1500+ 台 · 中国之声 / 省市音乐台", page: "rblist:country:CN:0" },
     ]
       .concat(RD_MOODS.map((m) => ({ title: m.name, subtitle: m.desc, page: "rblist:mood:" + m.id + ":0" })))
-      .concat([{ title: "全部目录", subtitle: "按流派 / 国家 / 语言浏览", page: "radio" }]),
+      .concat([
+        { title: "全部目录", subtitle: "按流派 / 国家 / 语言浏览", page: "radio" },
+        { title: "电台播不了？点这里自检", subtitle: "看 ffmpeg 卡在哪一步", page: "diag" },
+      ]),
     empty: "目录暂时连不上",
   });
 
@@ -8549,6 +8621,8 @@ export async function home() {
 
 export async function browse({ page }) {
   const p = String(page || "");
+
+  if (p === "diag") return await diagPage();
 
   // 分类的「查看全部」—— 跟主页同一套跨平台拼单
   if (p.startsWith("cat:")) {
