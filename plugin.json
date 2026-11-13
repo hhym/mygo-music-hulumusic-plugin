@@ -1,7 +1,7 @@
 {
   "id": "hulu-music",
   "name": "葫芦音乐",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "minAppVersion": "0.1.8",
   "main": "index.js",
   "playback": "stream",
@@ -100,12 +100,12 @@
     {
       "key": "transcode",
       "label": "转码播放",
-      "help": "留空或填 1 = 开启：HE-AAC（SBR）、MPEG Layer II、HLS 等播放器解不了的内容会用本机 ffmpeg 实时转 mp3。填 0 关闭：直接播原地址，多数这类内容会报 go-aac/SBR 或 only layer3 错误。"
+      "help": "留空或填 1 = 开启：HE-AAC（SBR）、MPEG Layer II、HLS、以及蜻蜓台那种「帧前带随机前缀」的流，会用本机 ffmpeg 实时转 mp3。填 0 关闭：直接播原地址，这类内容多半报 go-aac/SBR 或 only layer3。"
     },
     {
       "key": "ffmpegPath",
       "label": "ffmpeg 路径",
-      "help": "留空则自动查找：先插件自带 bin/，再按 PATH，再试 /opt/homebrew/bin、/usr/local/bin、/usr/bin、/snap/bin、C:\\ffmpeg\\bin 等常见位置。自定义时填完整路径，例如 C:\\ffmpeg\\bin\\ffmpeg.exe 或 /opt/homebrew/bin/ffmpeg",
+      "help": "留空则自动查找：先插件自带 bin/，再按 PATH，再试 /opt/homebrew/bin、/usr/local/bin、/usr/bin、/snap/bin、C:\\\\ffmpeg\\\\bin 等常见位置。自定义填完整路径，例如 C:\\\\ffmpeg\\\\bin\\\\ffmpeg.exe。⚠️ 还要在本插件的设置页点一下「允许运行程序」，否则转码不会被启动。",
       "link": "https://ffmpeg.org/download.html"
     }
   ],

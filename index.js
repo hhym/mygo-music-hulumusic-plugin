@@ -1778,6 +1778,17 @@ async function rdPrefetch(stations) {
 
 /* 严格探测：真去读几千字节，认得出播放器能解的格式才直连。
    广播台常在 HEAD 上撒谎（HEAD 200、GET 404），只看状态码不够。 */
+/* 探测要 5~6 秒，同一台反复点会白等；3 分钟内复用结果 */
+const rdProbeCache = new Map();
+async function rdProbe(url, timeoutMs) {
+  const key = String(url || "");
+  const hit = rdProbeCache.get(key);
+  if (hit && Date.now() - hit.at < 3 * 60 * 1000) return hit.r;
+  const r = await rdProbeStream(url, timeoutMs);
+  rdProbeCache.set(key, { at: Date.now(), r });
+  return r;
+}
+
 async function rdProbeStream(url, timeoutMs) {
   let status = 0;
   try {
@@ -1787,8 +1798,13 @@ async function rdProbeStream(url, timeoutMs) {
     });
     status = res.status;
     if (status !== 200 && status !== 206) {
+      /* 非 2xx 时把前几十字节读出来：zeno.fm / qtfm 会回
+         "upstream connect error or disconnect/reset before headers"，
+         这句能直接告诉用户是「这个台自己没在播」而不是「插件坏了」 */
+      let body = "";
+      try { body = String(await res.text()).slice(0, 100); } catch {}
       try { res.body && res.body.cancel && res.body.cancel(); } catch {}
-      return { ok: false, status, bytes: 0, why: "HTTP " + status };
+      return { ok: false, status, bytes: 0, body, why: "HTTP " + status };
     }
     /* ⚠️⚠️ 这里绝对不能用 res.arrayBuffer()。
        直播台是**永远不会结束**的流：不认 Range 的（蜻蜓老台一律回 200 + chunked）
@@ -6966,16 +6982,20 @@ async function _streamInner({ id, quality }) {
     const st = await rdById(id);
     if (!st) throw fail("unavailable", "这个电台已经下架了");
     const url = st.url;
-    /* 蜻蜓系（qtfm / qingting）的流一律 MP2 或 HE-AAC —— 播放器必报错，
-       而且这家的服务端在不少线路会回 200 空包，探一次白等 8 秒。
-       直接上 ffmpeg 转码，省掉探测这一步。 */
-    if (/qtfm\.cn|qingting\.fm/i.test(url)) {
-      const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
-      if (served) return { url: served.url, type: "mp3" };
-      trace("rd 蜻蜓台转码没起来", "退回探测");
+    /* ⚠️ 蜻蜓系（qtfm.cn / qingting.fm）每次连接都会在第一个 MPEG 帧前塞一段
+       随机长度的前缀：实测同一台十次请求分别是 2 / 14 / 16 / 25 / 36 / 63 / 66 / 79 / 89 字节，
+       内容也每次不同（不是 ID3、不是固定 ICY 头）。
+       MyGo 的 mp3 解码器从第 0 字节开始读，碰上这些前缀直接报
+       「mp3: only layer3 (want 1; got 2)」或「这首歌无法播放」。
+       前缀长度不固定 → 跳过固定字节没用，只能让 ffmpeg 自己同步到帧。
+       所以这里不再"先转码再说"，而是先探测：干净的台直连（快、不依赖 ffmpeg），
+       带前缀的台才转码。 */
+    const probe0 = await rdProbe(url, 6000);
+    if (probe0.ok && probe0.clean) {
+      return { url, type: probe0.fmt };
     }
     /* aac 一律先转码：里面混着 HE-AAC（SBR+PS），MyGo 的解码器直接报错 */
-    const probe = await rdProbeStream(url, 5000);
+    const probe = probe0;
     if (probe.ok) {
       /* 头部带垃圾的平台（蜻蜓部分台）直连解码器必崩，探测出 mp3 也得转 */
       if (probe.fmt === "mp3" && probe.clean === false) {
@@ -7000,15 +7020,32 @@ async function _streamInner({ id, quality }) {
       return { url, type: probe.fmt };
     }
     trace("rd 直连不可播", probe.why || "");
-    /* 读不到数据（国内台在境外线路常见）或格式不认：交给 ffmpeg 在用户本机拉流转 mp3 */
+    /* 读不到数据或格式不认：交给 ffmpeg 在用户本机拉流转 mp3 */
     const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
     if (served) return { url: served.url, type: "mp3" };
-    /* 转码也没起来：只要服务端回 2xx 就退回原始地址，让播放器自己再试一次 */
-    if (probe.status >= 200 && probe.status < 300) {
-      trace("rd 探测失败但服务端 2xx，退回直连", String(probe.bytes || 0) + "B");
+    /* 到这里说明：直接播不了，ffmpeg 也没启动。
+       ⚠️ 不能再"退回原始地址让播放器自己试" —— 带随机前缀或 HE-AAC 的流
+          丢过去只会以一句「这首歌无法播放」收场，用户完全不知道发生了什么。
+       用普通 Error（不带 code）：MyGo 会把 message 原样显示在播放栏。 */
+    /* 用户在设置里明确关掉了转码（填 0）：这是他自己的选择，退回直连，
+       播不播得出来由播放器决定，不再拦。 */
+    if (!transcodeEnabled()) {
+      trace("转码被设置关掉，退回直连", url.slice(0, 60));
       return { url, type: rdStreamType(url) };
     }
-    throw fail("unavailable", "这个电台连不上（" + (probe.why || "无响应") + "），换一台试试");
+    if (probe.ok) {
+      throw new Error(
+        "这个台的音频开头带随机前缀（蜻蜓等直播台的常见做法），播放器自己解不了，要用 ffmpeg 转一道。" +
+        "现在 ffmpeg 没能启动：请到插件设置里把「ffmpeg 路径」填全，并在弹出的授权里点「允许」。"
+      );
+    }
+    if (probe.status === 503 || /upstream connect|upstream|disconnect/i.test(String(probe.body || ""))) {
+      throw fail("unavailable", "这个台的服务器现在没在播（" + (probe.body || probe.why || "503") + "），换一台吧");
+    }
+    throw new Error(
+      "拉不到这个台的音频数据（" + (probe.why || "无响应") + "），需要 ffmpeg 在本机拉流。" +
+      "现在 ffmpeg 没能启动：请把「ffmpeg 路径」填全，并在授权提示里点「允许」。"
+    );
   }
 
   if (s.startsWith("radio:")) {
