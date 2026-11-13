@@ -1,7 +1,7 @@
 {
   "id": "hulu-music",
   "name": "葫芦音乐",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "minAppVersion": "0.1.8",
   "main": "index.js",
   "playback": "stream",
@@ -112,11 +112,6 @@
       "icon": "artist"
     },
     {
-      "title": "电台",
-      "page": "stations",
-      "icon": "radio"
-    },
-    {
       "title": "播客",
       "page": "shows",
       "icon": "podcast"
@@ -125,6 +120,11 @@
       "title": "播客收藏",
       "page": "myshows",
       "icon": "heart"
+    },
+    {
+      "title": "故障自检",
+      "page": "diag",
+      "icon": "star"
     },
     {
       "title": "QQ 音乐",

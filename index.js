@@ -6605,14 +6605,6 @@ export async function home() {
   /* ③ 首页不再放「继续听」（2026-11-09 按用户要求去掉）。
      最近播放有侧边栏独立入口（page: recent），不需要在首页重复一遍。 */
 
-  /* ④ 自检入口（电台已移除，但 ffmpeg 仍是播客 / B站 / 酷我转码的必需件，
-     出问题时还得有个地方看它卡在哪一步）。 */
-  sections.push({
-    title: "故障自检",
-    subtitle: "ffmpeg 转码/授权排查",
-    links: [{ title: "转码播不了？点这里自检", subtitle: "看 ffmpeg 卡在哪一步", page: "diag" }],
-  });
-
   if (!sections.length) {
     sections.push({ title: "葫芦音乐", empty: "先去搜索页找首歌吧" });
   }
