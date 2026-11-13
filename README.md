@@ -13,7 +13,7 @@
 | 歌单 | 自建歌单、我喜欢、收藏 |
 | 歌手页 | 下架歌手走 YouTube 官方 Topic 频道拉完整曲库 |
 | 专辑页 | 云音乐歌手目录 + YouTube 虚拟专辑兜底 |
-| 电台 | 30+ 直播电台（SomaFM 等）+ Radio Browser 目录三万多台：按心情 / 流派 / 国家浏览，中国电台 1900+ 单独入口 |
+| 电台 | 30+ 直播电台（SomaFM 等）+ RoamDial 三万多个电台：按心情 / 分类 / 国家浏览，中国电台 1500+ 单独入口 |
 | 播客 | 41 个分类，播客小镇 + Apple Podcasts + 云音乐电台三源合并 |
 | QQ 音乐 | 独立入口：榜单分组（巅峰/地区/特色/全球）、歌单、专辑、歌手页与歌词，免登录 |
 
@@ -25,7 +25,7 @@
 - **Apple Podcasts** — 播客搜索与歌手头像
 - **播客小镇 (podtown.xyz)** — 266 个中文播客，自带 RSS
 - **SomaFM / Radio France** — 直播电台
-- **Radio Browser**（[jockcc/mygo-music-radio](https://github.com/jockcc/mygo-music-radio) 同源目录）— 三万多台真实电台，只列能解码的流；HLS 台自动用 ffmpeg 转 mp3
+- **RoamDial**（[GYRYEZ/mygo-music-roamdial](https://github.com/GYRYEZ/mygo-music-roamdial) 同源目录）— 三万多个真实电台，按国别 / 分类 / 心情筛选；蜻蜓系与 AAC 台自动用 ffmpeg 转 mp3
 - **QQ 音乐** — 搜索（单曲混排 + 专辑/歌手/歌单补充）、专辑 `qqa:` / 歌手 `qqr:` / 歌单 `qqp:` / 榜单 `qqc:` / 歌词，匿名接口，付费曲目自动兜底 YouTube
 
 ## 播放相关
@@ -107,8 +107,7 @@ BANNED_ARTISTS.md       下架歌手整理
 这个插件不是从零写起的东西，它站在几个开源项目的肩上：
 
 - **[@ZONGZI-000](https://github.com/ZONGZI-000)** — [zongzi-mygo-plugin-beta](https://github.com/ZONGZI-000/zongzi-mygo-plugin-beta) 是本项目的起点：插件骨架、云音乐 / YouTube / 酷我 / B 站 / 播客的接入方式、ffmpeg 转码与播放器兼容性的那些坑，都出自这里。感谢作者把整套实现开源出来。
-- **[@jockcc](https://github.com/jockcc)** — [mygo-music-radio](https://github.com/jockcc/mygo-music-radio) 提供了 Radio Browser 目录的接入思路与可播性判断，电台目录部分参考了它的做法。
-- **[Radio Browser](https://www.radio-browser.info)** — 三万多台电台目录，由社区志愿者维护，免费开放。
+- **[@GYRYEZ](https://github.com/GYRYEZ)** — [mygo-music-roamdial](https://github.com/GYRYEZ/mygo-music-roamdial) 是电台目录部分的数据来源与参考实现：RoamDial 两个接口的拼接方式、台标取法、按国家 / 分类筛选都出自这里。
 
 ## 说明
 

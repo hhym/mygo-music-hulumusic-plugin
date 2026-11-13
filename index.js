@@ -1590,285 +1590,300 @@ async function qqSearchKind(kind, query, limit) {
 }
 
 /* ============================================================
- * 网络电台目录（Radio Browser）
+ * 网络电台（RoamDial）
  * ------------------------------------------------------------
- * 作者 jockcc/mygo-music-radio 用的是 Radio Browser 的公开目录：
- * 三万多个真实电台，按流派 / 国家 / 语言分，还能按心情推荐。
- * 这里把它接进聚合插件，作为「电台」页之上的一个更大目录：
+ * 上游 GYRYEZ/mygo-music-roamdial：把 roamdial.com 的世界电台接进播放器。
+ * RoamDial 把整张电台地图拆成两个 JSON：
+ *   /api/globe?part=core   分类 / 国家 / 语种 / 热度，按下标对齐的索引（0.9MB）
+ *   /api/globe?part=rest   台名 / 流地址 / 标签 / 州省（3 万台，3.7MB）
+ * 两个文件按下标一一对应，join 一次就整场会话缓存。之后翻页、筛国家、筛分类
+ * 全在内存里做，不再请求目录 —— 比一页一个请求快得多，代价是首次加载要下 4.6MB。
  *
- *   radio                      目录首页（心情 + 流派 + 国家）
- *   rblist:mood:<id>:0         某个心情的电台（focus / late / drive …）
- *   rblist:tag:<tag>:0         某个流派的电台（jazz / classical …）
- *   rblist:country:<CC>:0      某个国家的电台（CN / US …）
- *   rblist:random:all:0        随机漫游（每次都不一样）
- *   rb:<stationuuid>           单台取流
+ * 页面：
+ *   radio                     目录首页（中国电台 / 分类 / 国家 / 随便听听）
+ *   rblist:country:<CC>:<n>   某国家的电台（CN / US …）
+ *   rblist:genre:<i>:<n>      某分类的电台（0 流行 … 10 综合）
+ *   rblist:mood:<id>:<n>      心情台（分类 + 标签拼出来的）
+ *   rblist:random:all:<n>     随便听听（按日期打散，同一天顺序稳定）
+ *   rd:<station id>           单台取流
  *
- * ⚠️ 直接播的台只收播放器能解码的（mp3 / aac / ogg / flac / m4a / wav）。
- *    HLS(m3u8) 播放器解不了，但 ffmpeg 能拉，所以也收，播放时转 mp3；
- *    WMA 和 pls/m3u/xspf 这类播放列表文件剔掉 —— 转码也救不回来。
- *
- * ⚠️ 镜像只有 de1 在实测里稳定可用（at1 / nl1 / fi1 在部分网络下连不上）。
- *    所以默认走 de1，失败才按顺序换下一个，并把坏掉的镜像记下来。
+ * ⚠️ 封面：台标在 /api/stations/<id> 里，得逐台取；ICO / SVG / GIF 走 weserv
+ *    转 PNG（播放器只认 png / jpg / webp）。列表页只预取当前这一页，
+ *    并发 12、单台 2.5 秒超时 —— 三万台全预取等于打人家服务器。
  * ============================================================ */
-const RB_MIRRORS = [
-  "de1.api.radio-browser.info",
-  "at1.api.radio-browser.info",
-  "nl1.api.radio-browser.info",
-  "fi1.api.radio-browser.info",
-];
-const RB_UA = "MyGoMusicHulu/1.0";
-/* 国家 / 流派一次取多少台。Radio Browser 的 search 一次给两百条还算快，
-   中国的 1900 多个台翻十页就能到底，比一页 50 翻四十次舒服得多。 */
-const RB_PAGE = 200;
+const RD_SITE = "https://roamdial.com";
+const RD_PAGE = 60; // 一次给多少台，翻页也按这个步进
+const RD_TYPES = ["mp3", "aac", "ogg", "flac", "m4a", "wav"];
+const RD_UA = "MyGoMusicHulu/1.0";
 
-/* 有上千个台、点进去不会空的流派 */
-const RB_GENRES = [
-  { name: "爵士", tag: "jazz" },
-  { name: "古典", tag: "classical" },
-  { name: "电子", tag: "electronic" },
-  { name: "氛围", tag: "ambient" },
-  { name: "驰放", tag: "chillout" },
-  { name: "Lo-fi", tag: "lofi" },
-  { name: "摇滚", tag: "rock" },
-  { name: "流行", tag: "pop" },
-  { name: "蓝调", tag: "blues" },
-  { name: "灵魂乐", tag: "soul" },
-  { name: "民谣", tag: "folk" },
-  { name: "新闻", tag: "news" },
+/* 分类索引固定（core.genres 的顺序）：0 流行 1 摇滚 2 电子 3 爵士蓝调 4 古典
+   5 新闻谈话 6 嘻哈 7 乡村民谣 8 地方与世界 9 宗教 10 综合 */
+const RD_MOODS = [
+  { id: "focus", name: "专注", desc: "古典与电子，长时段不吵", genres: [4, 2], tags: ["ambient", "chill", "study", "piano"] },
+  { id: "late", name: "深夜", desc: "爵士蓝调，一点静电噪音", genres: [3], tags: ["lounge", "late", "night", "slow"] },
+  { id: "drive", name: "路上", desc: "流行和摇滚，跟着节奏走", genres: [0, 1, 10], tags: ["hit", "drive", "classic"] },
+  { id: "wander", name: "漫游", desc: "每次都是世界的另一个角落", genres: [], tags: [] },
+  { id: "cafe", name: "咖啡馆", desc: "低声说话，屋子是暖的", genres: [10, 3], tags: ["lounge", "cafe", "coffee", "acoustic"] },
+  { id: "dance", name: "舞曲", desc: "四四拍，一直不停", genres: [2], tags: ["dance", "house", "techno", "club", "edm"] },
+  { id: "sleep", name: "睡前", desc: "慢、轻、远", genres: [4], tags: ["sleep", "ambient", "relax", "ambience"] },
+  { id: "news", name: "新闻", desc: "别处正在发生什么", genres: [5], tags: ["news", "talk"] },
 ];
 
-/* 心情台：每个给一组标签，取一个随机标签拉一批（跟上游一样的做法） */
-const RB_MOODS = [
-  { id: "focus", name: "专注", desc: "长时间安静，不吵一句", tags: ["ambient", "chillout", "classical"] },
-  { id: "late", name: "深夜", desc: "爵士、灵魂乐，一点静电噪音", tags: ["jazz", "soul", "blues", "lofi"] },
-  { id: "drive", name: "路上", desc: "跟着节奏走", tags: ["pop", "rock", "electronic"] },
-  { id: "wander", name: "漫游", desc: "每次都是世界的另一个角落", tags: [] },
-  { id: "cafe", name: "咖啡馆", desc: "低声说话，屋子是暖的", tags: ["lounge", "bossa", "acoustic"] },
-  { id: "dance", name: "舞曲", desc: "四四拍，一直不停", tags: ["dance", "house", "techno"] },
-  { id: "sleep", name: "睡前", desc: "慢、轻、远", tags: ["sleep", "ambient", "piano"] },
-  { id: "news", name: "新闻", desc: "别处正在发生什么", tags: ["news", "talk"] },
-];
+let rdCache = null;
+let rdPending = null;
+const rdDetails = new Map(); // id → { cover, about }
 
-let rbMirror = "";
-let rbProbing = null;
-const rbStations = new Map(); // uuid → 电台对象（本轮见过就记住，取流不再请求）
-const rbCountriesCache = { at: 0, list: [] };
-
-async function rbApi(path, params) {
-  if (!rbMirror) {
-    if (!rbProbing) {
-      rbProbing = (async () => {
-        for (const m of RB_MIRRORS) {
-          try {
-            const r = await fetch("https://" + m + "/json/stats", { headers: { "User-Agent": RB_UA }, signal: AbortSignal.timeout(8000) });
-            if (r.ok) return m;
-          } catch {}
-        }
-        return RB_MIRRORS[0];
-      })().then((m) => {
-        rbProbing = null;
-        rbMirror = m;
-        return m;
-      });
-    }
-    await rbProbing;
+function rdChinese() {
+  try {
+    return String(host.language() || "").toLowerCase().indexOf("zh") === 0;
+  } catch {
+    return true;
   }
-  const q = Object.keys(params || {})
-    .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== "")
-    .map((k) => encodeURIComponent(k) + "=" + encodeURIComponent(String(params[k])))
-    .join("&");
-  const url = "https://" + (rbMirror || RB_MIRRORS[0]) + path + (q ? "?" + q : "");
+}
+
+async function rdFetch(url, timeoutMs) {
   let res;
   try {
-    res = await fetch(url, { headers: { "User-Agent": RB_UA }, signal: AbortSignal.timeout(20000) });
+    res = await fetch(url, { headers: { "User-Agent": RD_UA }, signal: AbortSignal.timeout(timeoutMs || 30000) });
   } catch (e) {
-    rbMirror = ""; // 下次重新挑镜像
-    throw fail("unavailable", "连不上电台目录，稍后再试");
+    throw fail("unavailable", "连不上 RoamDial，稍后再试");
   }
-  if (!res.ok) {
-    rbMirror = "";
-    throw fail("unavailable", "电台目录拒绝了这次请求");
-  }
+  if (!res.ok) throw fail("unavailable", "RoamDial 接口返回 " + res.status);
   try {
     return await res.json();
   } catch {
-    throw fail("unavailable", "电台目录返回的内容不是 JSON");
+    throw fail("unavailable", "RoamDial 返回的内容不是 JSON");
   }
 }
 
-/** 只收播放器能解码的流：HLS / WMA / 播放列表文件全部剔除 */
-function rbPlayable(s) {
-  const url = String(s.url_resolved || s.url || "").trim();
-  if (!/^https?:\/\//i.test(url)) return false;
-  const file = url.toLowerCase().split("?")[0].split("#")[0];
-  /* HLS（m3u8）播放器自己解不了，但 ffmpeg 能拉 —— 收下来，播放时转码。
-       .m3u/.pls/.xspf/.asx 这些是「播放列表文件」，点开没有声，必须剔掉。 */
-  if (/\.(m3u|pls|xspf|asx)$/.test(file)) return false;
-  if (/\.m3u8$/.test(file) || Number(s.hls) === 1) return true;
-  const codec = String(s.codec || "").toLowerCase();
-  if (codec.indexOf("hls") >= 0) return true;
-  if (codec.indexOf("wma") >= 0) return false;
-  if (/mp3|aac|ogg|flac|m4a|wav/.test(codec)) return true;
-  if (/\.(mp3|aac|ogg|oga|flac|m4a|wav)$/.test(file)) return true;
-  /* codec 空着或写着 unknown 的，目录里太多了（尤其国内台）。地址不是播放列表
-     就留着 —— 只剔掉明确解不了的编码，能不能出声交给取流时那一层判断。 */
-  if (!codec || codec.indexOf("unknown") >= 0) return true;
-  return false;
+/** 只收能直接播的地址：播放列表文件点开没有声，HLS 交给播放器也是哑的 */
+function rdDirect(url) {
+  const u = String(url || "").trim();
+  if (!/^https?:\/\//i.test(u)) return false;
+  const file = u.toLowerCase().split("?")[0].split("#")[0];
+  if (/\.(m3u8|m3u|pls|xspf|asx)$/.test(file)) return false;
+  if (/\.(wma|webm)$/.test(file)) return false;
+  return true;
 }
 
-function rbStreamType(s) {
-  const file = String(s.url_resolved || s.url || "").toLowerCase().split("?")[0];
-  const codec = String(s.codec || "").toLowerCase();
-  if (codec.indexOf("flac") >= 0 || /\.flac$/.test(file)) return "flac";
-  if (codec.indexOf("ogg") >= 0 || /\.(ogg|oga)$/.test(file)) return "ogg";
+function rdStreamType(url) {
+  const file = String(url || "").toLowerCase().split("?")[0].split("#")[0];
+  if (/\.aac$/.test(file)) return "aac";
   if (/\.m4a$/.test(file)) return "m4a";
-  if (codec.indexOf("aac") >= 0 || /\.aac$/.test(file)) return "aac";
-  if (codec.indexOf("wav") >= 0 || /\.wav$/.test(file)) return "wav";
+  if (/\.(ogg|oga|opus)$/.test(file)) return "ogg";
+  if (/\.flac$/.test(file)) return "flac";
+  if (/\.wav$/.test(file)) return "wav";
   return "mp3";
 }
 
-function rbClean(name) {
+function rdClean(name) {
   return String(name || "")
     .replace(/\s+/g, " ")
-    .replace(/^[\s\-–|]+|[\s\-–|]+$/g, "")
     .trim();
 }
 
-function rbPicture(s) {
-  const url = String(s.favicon || "").trim();
-  if (!/^https?:\/\//i.test(url)) return "";
-  if (/\.svg([?#]|$)/i.test(url)) return ""; // 播放器画不了 svg 封面
-  return url;
+function rdCountryName(core, i) {
+  const row = core.countries && core.countries[i];
+  if (!row) return "";
+  return rdChinese() ? row[1] || row[2] || row[0] || "" : row[2] || row[1] || row[0] || "";
 }
 
-/** Radio Browser 的电台 → MyGo Track（直播：没有时长） */
-function rbTrack(s) {
-  const tags = String(s.tags || "")
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
-  const country = String(s.country || s.countrycode || "");
-  const art = rbPicture(s);
-  const album = { name: tags.slice(0, 2).join(" · ") || "网络电台" };
-  if (art) album.imageUrl = art;
-  return {
-    id: "rb:" + String(s.stationuuid || ""),
-    name: rbClean(s.name) || "未命名电台",
-    artists: country ? [{ name: country }] : [{ name: "网络电台" }],
-    album,
-    artwork: art,
-    duration: undefined, // 直播没有时长
-    provider: "radio-browser",
-  };
+function rdGenreName(core, i) {
+  const zh = (core.genres || [])[i] || "";
+  const en = (core.genresEn || [])[i] || "";
+  return rdChinese() ? zh || en : en || zh;
 }
 
-function rbToList(list, seen) {
-  const out = [];
-  for (const s of list || []) {
-    if (!s || !s.stationuuid || !rbPlayable(s)) continue;
-    if (seen.has(s.stationuuid)) continue;
-    seen.add(s.stationuuid);
-    rbStations.set(String(s.stationuuid), s);
-    out.push(rbTrack(s));
-  }
-  return out;
+/** 一次 join 完两个接口，整场会话只做一次 */
+async function rdLoad() {
+  if (rdCache) return rdCache;
+  if (rdPending) return rdPending;
+  rdPending = (async () => {
+    const [core, rest] = await Promise.all([
+      rdFetch(RD_SITE + "/api/globe?part=core", 25000),
+      rdFetch(RD_SITE + "/api/globe?part=rest", 45000),
+    ]);
+    if (!rest || !rest.id || !core || !core.countries) throw fail("unavailable", "RoamDial 的数据格式变了");
+    const stations = [];
+    const byId = new Map();
+    for (let i = 0; i < rest.id.length; i++) {
+      const url = String(rest.url[i] || "");
+      if (!rdDirect(url)) continue;
+      const st = {
+        id: String(rest.id[i]),
+        name: rdClean(rest.name[i]) || "未命名电台",
+        url,
+        tags: String(rest.tags[i] || ""),
+        state: String(rest.state[i] || ""),
+        ci: Number(core.c[i]) || 0,
+        gi: Number(core.g[i]) || 0,
+        pop: Number(core.pop[i]) || 0,
+      };
+      st.text = [st.name, st.tags, st.state, rdCountryName(core, st.ci), rdGenreName(core, st.gi)]
+        .join(" ")
+        .toLowerCase();
+      stations.push(st);
+      byId.set(st.id, st);
+    }
+    /* 国家与分类的台数一次算完，别在渲染目录时对 3 万台逐个 filter */
+    const countryCount = new Map();
+    const genreCount = new Map();
+    for (const st of stations) {
+      countryCount.set(st.ci, (countryCount.get(st.ci) || 0) + 1);
+      genreCount.set(st.gi, (genreCount.get(st.gi) || 0) + 1);
+    }
+    rdCache = { core, stations, byId, countryCount, genreCount };
+    rdPending = null;
+    return rdCache;
+  })().catch((e) => {
+    rdPending = null;
+    throw e;
+  });
+  return rdPending;
 }
 
-async function rbSearch(params, limit) {
-  const list = await rbApi("/json/stations/search", { ...params, limit: limit || 50, hidebroken: "true" });
-  return Array.isArray(list) ? list : [];
+/** 台标：详情接口里的 favicon；非位图走 weserv 转 PNG；拿不到就用兜底封面 */
+function rdProxied(url) {
+  return "https://images.weserv.nl/?url=" + encodeURIComponent(url) + "&w=600&h=600&fit=cover&output=png&n=-1";
 }
 
-async function rbById(uuid) {
-  const known = rbStations.get(String(uuid));
+async function rdDetail(station) {
+  const known = rdDetails.get(station.id);
   if (known) return known;
-  const list = await rbApi("/json/stations/byuuid/" + encodeURIComponent(uuid), {});
-  const s = Array.isArray(list) && list[0];
-  if (!s) return null;
-  rbStations.set(String(uuid), s);
-  return s;
+  const found = { cover: "", about: "" };
+  try {
+    const data = await rdFetch(RD_SITE + "/api/stations/" + encodeURIComponent(station.id), 2500);
+    const favicon = String((data && data.favicon) || "");
+    if (/^https?:\/\//i.test(favicon)) {
+      found.cover = /\.(png|jpe?g|webp)(\?|#|$)/i.test(favicon) ? favicon : rdProxied(favicon);
+    }
+    found.about = String((data && data.about) || "").trim();
+  } catch {}
+  rdDetails.set(station.id, found);
+  return found;
 }
 
-/* 严格探测：状态码必须 2xx/206，且头部要能认出播放器认的六种格式。
-   广播台常在 HEAD 上撒谎（HEAD 200、GET 404），所以这里真的去读几千字节。 */
-const RB_TYPES = ["mp3", "aac", "ogg", "flac", "m4a", "wav"];
-async function rbProbeStream(url, timeoutMs) {
+/** 只预取这一页的封面，并发 12，省得连播放器都等 */
+async function rdPrefetch(stations) {
+  const todo = [];
+  for (const st of stations) if (!rdDetails.has(st.id)) todo.push(st);
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) await rdDetail(todo[next++]);
+  };
+  const workers = [];
+  for (let i = 0; i < Math.min(12, todo.length); i++) workers.push(worker());
+  await Promise.all(workers);
+}
+
+/* 严格探测：真去读几千字节，认得出播放器能解的格式才直连。
+   广播台常在 HEAD 上撒谎（HEAD 200、GET 404），只看状态码不够。 */
+async function rdProbeStream(url, timeoutMs) {
   try {
     const res = await fetch(url, {
-      headers: { Range: "bytes=0-8191", "User-Agent": RB_UA },
+      headers: { Range: "bytes=0-8191", "User-Agent": RD_UA },
       signal: AbortSignal.timeout(timeoutMs || 8000),
     });
     const status = res.status;
     const buf = new Uint8Array(await res.arrayBuffer().catch(() => new Uint8Array(0)));
-    if (status !== 200 && status !== 206) {
-      return { ok: false, status, bytes: buf.length, why: "HTTP " + status };
-    }
-    /* 服务端接了连接却不给数据：多半是线路或地区限制，不是台坏了 */
-    if (buf.length < 64) {
-      return { ok: false, status, bytes: buf.length, short: true, why: "服务端没给数据（" + buf.length + "B）" };
-    }
+    if (status !== 200 && status !== 206) return { ok: false, status, bytes: buf.length, why: "HTTP " + status };
+    if (buf.length < 64) return { ok: false, status, bytes: buf.length, short: true, why: "服务端没给数据（" + buf.length + "B）" };
     const d = detectAudio(buf);
     if (!d || !d.ok) return { ok: false, status, bytes: buf.length, why: (d && d.why) || "读不出音频头" };
-    const map = { mp4: "m4a", webm: "" }; // 播放器不认 webm（不在六种里）
+    const map = { mp4: "m4a", webm: "" };
     const fmt = map[d.fmt] !== undefined ? map[d.fmt] : d.fmt;
-    if (!fmt || RB_TYPES.indexOf(fmt) < 0) return { ok: false, status, bytes: buf.length, why: "格式 " + d.fmt + " 播放器不认" };
+    if (!fmt || RD_TYPES.indexOf(fmt) < 0) return { ok: false, status, bytes: buf.length, why: "格式 " + d.fmt + " 播放器不认" };
     return { ok: true, fmt, status, bytes: buf.length };
   } catch (e) {
     return { ok: false, why: String((e && e.message) || "连不上").slice(0, 40) };
   }
 }
 
-/** 国家列表（按电台数排序，取前 N 个；缓存 30 分钟） */
-async function rbCountries(limit) {
-  if (!rbCountriesCache.list.length || Date.now() - rbCountriesCache.at > 30 * 60 * 1000) {
-    const list = await rbApi("/json/countries", {});
-    if (Array.isArray(list)) {
-      rbCountriesCache.list = list
-        .filter((c) => c && c.iso_3166_1 && Number(c.stationcount) > 0)
-        .sort((a, b) => Number(b.stationcount) - Number(a.stationcount));
-      rbCountriesCache.at = Date.now();
-    }
-  }
-  return rbCountriesCache.list.slice(0, limit || 24);
+function rdCover(st) {
+  const found = rdDetails.get(st.id);
+  return (found && found.cover) || FALLBACK_COVER;
 }
 
-/** 列表页：rblist:<kind>:<value>:<offset> */
-async function rbListPage(kind, value, offset) {
+/** RoamDial 的电台 → MyGo Track（直播：没有时长） */
+function rdTrack(core, st) {
+  const country = rdCountryName(core, st.ci);
+  const genre = rdGenreName(core, st.gi);
+  const found = rdDetails.get(st.id) || {};
+  const bits = [];
+  if (found.about) bits.push(found.about);
+  if (st.state) bits.push(st.state);
+  if (st.tags) bits.push(st.tags.split(",").slice(0, 4).join(" · "));
+  return {
+    id: "rd:" + st.id,
+    name: st.name,
+    artists: country ? [{ name: country }] : [{ name: "网络电台" }],
+    album: { name: genre || "网络电台", imageUrl: rdCover(st) },
+    artwork: rdCover(st),
+    duration: undefined, // 直播没有时长
+    description: bits.join(" · ") || undefined,
+    provider: "roamdial",
+  };
+}
+
+/** 热度降序 + 台名升序，跟上游的排法一致 */
+function rdSorted(list) {
+  return list.slice().sort((a, b) => {
+    if (b.pop !== a.pop) return b.pop - a.pop;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+}
+
+async function rdListPage(kind, value, offset) {
+  const data = await rdLoad();
   const from = Math.max(0, Number(offset) || 0);
-  const seed = Math.floor(Math.random() * 1000);
-  let params = { offset: from, order: "clickcount", reverse: "true" };
+  let picked = [];
   let title = "网络电台";
   let sub = "";
-  if (kind === "mood") {
-    const mood = RB_MOODS.find((m) => m.id === value) || RB_MOODS[0];
-    const tags = mood.tags.length ? mood.tags : RB_GENRES.map((g) => g.tag);
-    const tag = tags[Math.floor(Math.random() * tags.length)];
-    params = { tag, offset: 0, order: "random", limit: 50 };
+
+  if (kind === "country") {
+    const code = String(value || "").toUpperCase();
+    const rows = data.core.countries || [];
+    const idx = rows.findIndex((row) => String(row[0]).toUpperCase() === code);
+    if (idx < 0) throw fail("unavailable", "没有这个国家");
+    picked = rdSorted(data.stations.filter((s) => s.ci === idx));
+    title = rdCountryName(data.core, idx) || code;
+    sub = picked.length + " 个电台 · 按热度排";
+  } else if (kind === "genre") {
+    const gi = Number(value);
+    if (!isFinite(gi) || gi < 0) throw fail("unavailable", "没有这个分类");
+    picked = rdSorted(data.stations.filter((s) => s.gi === gi));
+    title = rdGenreName(data.core, gi) || "分类";
+    sub = picked.length + " 个电台 · 按热度排";
+  } else if (kind === "mood") {
+    const mood = RD_MOODS.find((m) => m.id === value) || RD_MOODS[0];
     title = mood.name;
     sub = mood.desc;
-  } else if (kind === "tag") {
-    params = { tag: value, offset: from, order: "clickcount", reverse: "true", limit: RB_PAGE };
-    const g = RB_GENRES.find((x) => x.tag === value);
-    title = (g && g.name) || value;
-    sub = "按收聽人数排";
-  } else if (kind === "country") {
-    params = { countrycode: value, offset: from, order: "clickcount", reverse: "true", limit: RB_PAGE };
-    title = String(value).toUpperCase() + " 的电台";
-    sub = "按收听人数排";
+    if (mood.genres.length) {
+      const hit = (s) => {
+        const text = s.tags.toLowerCase();
+        let score = 0;
+        for (const tag of mood.tags) if (text.indexOf(tag) >= 0) score++;
+        return score;
+      };
+      const cands = data.stations.filter((s) => mood.genres.indexOf(s.gi) >= 0);
+      picked = cands
+        .map((s) => ({ s, score: hit(s) }))
+        .sort((a, b) => (b.score - a.score) || (b.s.pop - a.s.pop))
+        .map((x) => x.s);
+    } else {
+      picked = rdShuffled(data.stations, rdSeed());
+    }
   } else if (kind === "random") {
-    // 随机漫游：用 seed 打散，翻页也稳定同一批
-    params = { offset: 0, limit: 50, order: "random" };
-    title = "漫游";
-    sub = "随机的一批，每次都不太一样";
+    title = "随便听听";
+    sub = "按日期打散，同一天顺序固定";
+    picked = rdShuffled(data.stations, rdSeed());
   } else {
     throw fail("unavailable", "没有这种电台列表");
   }
-  const want = kind === "country" || kind === "tag" ? RB_PAGE : 50;
-  const raw = await rbSearch(params, want);
-  const tracks = rbToList(raw, new Set());
-  /* 步进要用「目录返回的条数」，不是过滤后还能播的条数 —— 过滤掉的台也得算进
-     偏移里，否则每翻一页都会悄悄跳过一批没露过面的台。 */
-  const more = kind !== "mood" && kind !== "random" && raw.length >= want;
+
+  const page = picked.slice(from, from + RD_PAGE);
+  await rdPrefetch(page);
+  const tracks = page.map((s) => rdTrack(data.core, s));
   return {
     title,
     subtitle: sub,
@@ -1877,11 +1892,41 @@ async function rbListPage(kind, value, offset) {
         title: "电台",
         tracks,
         empty: "这一批暂时没有可播的电台",
-        morePage: more ? `rblist:${kind}:${value}:${from + raw.length}` : "",
+        morePage: from + RD_PAGE < picked.length ? `rblist:${kind}:${value}:${from + RD_PAGE}` : "",
       },
     ],
   };
 }
+
+/** 当天种子：同一天翻页顺序稳定，过一天换一批 */
+function rdSeed() {
+  const d = new Date();
+  let seed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  return seed >>> 0;
+}
+
+/** 线性同余打散：三万台里挑一段，跨页不重复不跳号 */
+function rdShuffled(list, seed) {
+  let s = seed >>> 0;
+  const out = [];
+  const used = new Set();
+  const total = list.length;
+  if (!total) return out;
+  while (out.length < total && used.size < total) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const i = s % total;
+    if (used.has(i)) continue;
+    used.add(i);
+    out.push(list[i]);
+  }
+  return out;
+}
+
+async function rdById(id) {
+  const data = await rdLoad();
+  return data.byId.get(String(id)) || null;
+}
+
 
 async function kuwoSearch(query) {
   await jitter(120); // 打散请求时间点
@@ -6726,41 +6771,39 @@ async function _streamInner({ id, quality }) {
         跟点播不同：不设 -t（不限时长），也不做 seek。
      ⚠️ 先试直连（很多直播流本身就是 mp3，MyGo 能直接播），
         直连不通/格式怪再上 ffmpeg 转码。 */
-  /* Radio Browser 目录里的电台（rb:<stationuuid>）—— 直播流直连返回 */
-  if (s.startsWith("rb:")) {
-    const uuid = s.slice(3);
-    if (!uuid) throw fail("unavailable", "电台 id 为空");
-    const st = await rbById(uuid);
+  /* RoamDial 目录里的电台（rd:<内部 id>）—— 直播流，带三层兜底 */
+  if (s.startsWith("rd:")) {
+    const id = s.slice(3);
+    if (!id) throw fail("unavailable", "电台 id 为空");
+    const st = await rdById(id);
     if (!st) throw fail("unavailable", "这个电台已经下架了");
-    const url = String(st.url_resolved || st.url || "").trim();
-    if (!url) throw fail("unavailable", "这个电台没有可播的地址");
-    /* 目录里坏台不少（lastcheckok 也未必准），所以真去读一段音频头：
-       认得出就直连，认不出就上 ffmpeg 换 mp3，转码也失败才报错。 */
-    /* HLS 播放器自己解不了，先上 ffmpeg 拉流转 mp3 */
-    if (/\.m3u8([?#]|$)/i.test(url) || Number(st.hls) === 1) {
+    const url = st.url;
+    /* 蜻蜓系（qtfm / qingting）的流一律 MP2 或 HE-AAC —— 播放器必报错，
+       而且这家的服务端在不少线路会回 200 空包，探一次白等 8 秒。
+       直接上 ffmpeg 转码，省掉探测这一步。 */
+    if (/qtfm\.cn|qingting\.fm/i.test(url)) {
       const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
       if (served) return { url: served.url, type: "mp3" };
-      throw fail("unavailable", "这个 HLS 电台转码没起来，换一台试试");
+      trace("rd 蜻蜓台转码没起来", "退回探测");
     }
-    const probe = await rbProbeStream(url, 8000);
+    /* aac 一律先转码：里面混着 HE-AAC（SBR+PS），MyGo 的解码器直接报错 */
+    const probe = await rdProbeStream(url, 5000);
     if (probe.ok) {
-      /* aac 里混着 HE-AAC（SBR+PS），MyGo 的解码器直接报错。
-         转 mp3 最稳；转码起不来再把 aac 直连回去。 */
       if (probe.fmt === "aac") {
         const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
         if (served) return { url: served.url, type: "mp3" };
-        trace("rb aac 转码失败，直连", String(probe.bytes || 0) + "B");
+        trace("rd aac 转码失败，直连", String(probe.bytes || 0) + "B");
       }
       return { url, type: probe.fmt };
     }
-    trace("rb 直连不可播", probe.why || "");
+    trace("rd 直连不可播", probe.why || "");
+    /* 读不到数据（国内台在境外线路常见）或格式不认：交给 ffmpeg 在用户本机拉流转 mp3 */
     const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
     if (served) return { url: served.url, type: "mp3" };
-    /* 转码也没起来：只要服务端回的是 2xx，就退回原始地址，让播放器自己再试一次。
-       很多国内台在境外线路读不到数据，在用户本机却是好的 —— 不能因为探测失败就判死。 */
+    /* 转码也没起来：只要服务端回 2xx 就退回原始地址，让播放器自己再试一次 */
     if (probe.status >= 200 && probe.status < 300) {
-      trace("rb 探测失败但服务端 2xx，退回直连", String(probe.bytes || 0) + "B");
-      return { url, type: rbStreamType(st) };
+      trace("rd 探测失败但服务端 2xx，退回直连", String(probe.bytes || 0) + "B");
+      return { url, type: rdStreamType(url) };
     }
     throw fail("unavailable", "这个电台连不上（" + (probe.why || "无响应") + "），换一台试试");
   }
@@ -8249,11 +8292,11 @@ export async function home() {
      首页本来就慢，不能再多个三秒。 */
   sections.push({
     title: "网络电台",
-    subtitle: "三万多台真实电台，直播直连，HLS 自动转码",
+    subtitle: "RoamDial 三万多个真实电台，直播直连，转码兜底",
     links: [
-      { title: "中国电台", subtitle: "1900+ 台 · 中国之声 / 省市音乐台", page: "rblist:country:CN:0" },
+      { title: "中国电台", subtitle: "1500+ 台 · 中国之声 / 省市音乐台", page: "rblist:country:CN:0" },
     ]
-      .concat(RB_MOODS.map((m) => ({ title: m.name, subtitle: m.desc, page: "rblist:mood:" + m.id + ":0" })))
+      .concat(RD_MOODS.map((m) => ({ title: m.name, subtitle: m.desc, page: "rblist:mood:" + m.id + ":0" })))
       .concat([{ title: "全部目录", subtitle: "按流派 / 国家 / 语言浏览", page: "radio" }]),
     empty: "目录暂时连不上",
   });
@@ -8285,49 +8328,43 @@ export async function browse({ page }) {
   // 我的歌单（自建 + 收藏）
   /* QQ 音乐入口（page: qq）——把 QQ 的榜单搬进来，
      每个分组一个 section，卡片点进去是 qqchart:<topid>。 */
-  /* 网络电台目录（Radio Browser）：page radio 是目录首页，
+  /* 网络电台（RoamDial）：page radio 是目录首页，
      具体列表走 rblist:<kind>:<value>:<offset>。 */
   if (p === "radio" || p.startsWith("rblist:")) {
     if (p.startsWith("rblist:")) {
       const parts = p.slice(7).split(":");
-      const kind = parts[0] || "random";
-      return await rbListPage(kind, parts[1] || "all", parts[2] || 0);
+      return await rdListPage(parts[0] || "random", parts[1] || "all", parts[2] || 0);
     }
-    let countries = [];
-    try {
-      countries = await rbCountries(24);
-    } catch (e) {
-      trace("RB 国家列表失败", String((e && e.message) || e).slice(0, 60));
-    }
-    const sections = [
-      {
-        title: "按心情",
-        links: RB_MOODS.map((m) => ({ title: m.name, subtitle: m.desc, page: "rblist:mood:" + m.id + ":0" })),
-      },
-      {
-        title: "按流派",
-        links: RB_GENRES.map((g) => ({ title: g.name, page: "rblist:tag:" + g.tag + ":0" })),
-      },
-      {
-        title: "漫游",
-        links: [{ title: "随便听一台", subtitle: "随机一批可播电台", page: "rblist:random:all:0" }],
-      },
-    ];
-    if (countries.length) {
-      const cn = countries.find((c) => String(c.iso_3166_1).toUpperCase() === "CN");
-      const rest = countries.filter((c) => String(c.iso_3166_1).toUpperCase() !== "CN");
+    const data = await rdLoad();
+    const countries = (data.core.countries || [])
+      .map((row, i) => ({ code: String(row[0] || ""), name: rdCountryName(data.core, i), count: data.countryCount.get(i) || 0 }))
+      .filter((c) => c.count > 0 && c.code)
+      .sort((a, b) => b.count - a.count);
+    const genres = (data.core.genres || [])
+      .map((name, i) => ({ i, name: rdGenreName(data.core, i), count: data.genreCount.get(i) || 0 }))
+      .filter((g) => g.count > 0);
+    const cn = countries.find((c) => c.code.toUpperCase() === "CN");
+    const others = countries.filter((c) => c.code.toUpperCase() !== "CN");
+    const sections = [];
+    if (cn) {
       sections.push({
-        title: "按国家",
-        links: (cn ? [cn].concat(rest) : rest).map((c) => ({
-          title: String(c.name || c.iso_3166_1),
-          subtitle: Number(c.stationcount) + " 个台",
-          page: "rblist:country:" + c.iso_3166_1 + ":0",
-        })),
+        title: "中国电台",
+        links: [{ title: cn.name, subtitle: cn.count + " 个台 · 按热度排", page: "rblist:country:CN:0" }],
       });
     }
+    sections.push({ title: "按分类", links: genres.map((g) => ({ title: g.name, subtitle: g.count + " 个台", page: "rblist:genre:" + g.i + ":0" })) });
+    sections.push({
+      title: "按心情",
+      links: RD_MOODS.filter((m) => m.id !== "wander").map((m) => ({ title: m.name, subtitle: m.desc, page: "rblist:mood:" + m.id + ":0" })),
+    });
+    sections.push({
+      title: "随便听听",
+      links: [{ title: "今天抽一批", subtitle: "按日期打散，同一天顺序固定", page: "rblist:random:all:0" }],
+    });
+    sections.push({ title: "按国家", links: others.slice(0, 40).map((c) => ({ title: c.name, subtitle: c.count + " 个台", page: "rblist:country:" + c.code + ":0" })) });
     return {
-      title: "网络电台目录",
-      description: "Radio Browser · 三万多台真实电台，只列播放器能解码的流",
+      title: "网络电台",
+      description: "RoamDial · " + data.stations.length + " 个可直接播放的电台",
       sections,
     };
   }
