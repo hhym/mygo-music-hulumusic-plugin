@@ -1,0 +1,4 @@
+bin/
+*.zip
+node_modules/
+.release/
