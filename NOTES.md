@@ -1,5 +1,32 @@
 # 开发笔记
 
+## 1.3.0 · 移除全部直播电台
+
+用户的诉求从「删除 3000 个电台」澄清为「删除全部电台功能」，故整块下线。
+
+删掉的东西：
+- `index.js` 里 400 行 RoamDial 模块：`rdLoad` / `rdListPage` / `rdTrack` / `rdStation` /
+  `rdDetail` / `rdPrefetch` / `rdProbe` / `rdProbeStream` / `rdCover` / `rdSorted` /
+  `rdShuffled` / `rdById` / `rdChinese` / `rdCountryName` / `rdGenreName` / `RD_MOODS` 等
+- 分类混播台与网络收音机：`RADIO_STATIONS` / `RADIO_DIMS` / `RADIO_CAT_MAP` /
+  `radioStationsOfDim` / `LIVE_RADIOS` / `LIVE_STATIONS` / `radioSafe`
+- 导出接口 `stations()` 与 `stationNext()`（MyGo 的电台 tab 随之消失）
+- `browse` 的 `radio` / `rblist:*` / `stations` 三个页面分支
+- `stream` 的 `rd:` / `radio:` / `radios:` 取流分支（含蜻蜓 junk 头探测、ffmpeg 直播推流）
+- 首页的「网络电台」栏目（改成「故障自检」，只留 diag 入口）
+- `plugin.json` 17 个电台域名：roamdial / zeno / qtfm / radiofrance / somafm /
+  ntslive / radioparadise / musicradio / antenne / images.weserv.nl
+
+保留的东西：
+- **播客**（Apple Podcasts + 小宇宙 + 喜马拉雅 + 网易云电台节目）完全不动
+- **ffmpeg 转码**保留 —— B站 m4s、播客 m4a/HE-AAC、酷我 MP2 都还要用它
+- **自检页 `diag`** 保留，文案从「需要转码的台」改成「B站/播客/酷我的转码」
+
+兼容处理：
+- 旧收藏里的 `rd:` / `radio:` 条目不再报 ReferenceError，`stream` 统一回
+  「无法识别曲目」
+- 旧页面 `radio` / `rblist:*` / `stations` 统一回「没有这个页面」
+
 ## 1.2.9 · 移除 YouTube 源
 
 内地网络访问不到 YouTube，整条源已被删除（不是「保留但默认关闭」）。

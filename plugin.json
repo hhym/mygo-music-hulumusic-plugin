@@ -1,7 +1,7 @@
 {
   "id": "hulu-music",
   "name": "葫芦音乐",
-  "version": "1.2.9",
+  "version": "1.3.0",
   "minAppVersion": "0.1.8",
   "main": "index.js",
   "playback": "stream",
@@ -24,10 +24,6 @@
       "*.mcdn.bilivideo.cn",
       "*.hdslb.com",
       "*.jsdelivr.net",
-      "*.qtfm.cn",
-      "lhttp.qtfm.cn",
-      "stream.zeno.fm",
-      "*.zeno.fm",
       "podtown.xyz",
       "*.myqcloud.com",
       "*.fireside.fm",
@@ -52,20 +48,7 @@
       "*.buzzsprout.com",
       "*.podbean.com",
       "*.typlog.io",
-      "*.anchor.fm",
-      "icecast.radiofrance.fr",
-      "*.radiofrance.fr",
-      "ice1.somafm.com",
-      "*.somafm.com",
-      "stream-relay-geo.ntslive.net",
-      "*.ntslive.net",
-      "stream.radioparadise.com",
-      "*.radioparadise.com",
-      "media-ice.musicradio.com",
-      "s5-webradio.antenne.de",
-      "roamdial.com",
-      "images.weserv.nl",
-      "*.antenne.de"
+      "*.anchor.fm"
     ],
     "process": [
       "bin/win32-amd64/ffmpeg.exe",
@@ -149,5 +132,5 @@
       "icon": "chart"
     }
   ],
-  "description": "聚合网易云、B站、酷我、QQ 与播客/电台的音源插件，多平台互备（已移除 YouTube 源）"
+  "description": "聚合网易云、B站、酷我、QQ、播客的音源插件，多平台互备（已移除 YouTube 与直播电台）"
 }
