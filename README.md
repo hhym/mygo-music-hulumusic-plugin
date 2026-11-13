@@ -2,6 +2,8 @@
 
 聚合多个音乐源的 [MyGo](https://github.com/egoist/mygo-music) 音源插件。跨平台源聚合、相互兜底，主流 App 找不到的曲目也能在这里补齐。
 
+本项目基于 [@ZONGZI-000](https://github.com/ZONGZI-000) 的 [zongzi-mygo-plugin-beta](https://github.com/ZONGZI-000/zongzi-mygo-plugin-beta) 二次开发，在此致谢。
+
 ## 功能
 
 | 模块 | 说明 |
@@ -95,11 +97,18 @@ MYGO_PLUGIN_DIR=/some/dir ./deploy.sh   # 环境变量
 index.js                插件主逻辑（~7600 行）
 plugin.json             插件元信息 + 网络白名单
 locales/zh-CN.json      界面文案
-test_all.cjs            测试套件
 deploy.sh               部署脚本
 NOTES.md                MyGo 播放器硬限制备忘
 BANNED_ARTISTS.md       下架歌手整理
 ```
+
+## 致谢
+
+这个插件不是从零写起的东西，它站在几个开源项目的肩上：
+
+- **[@ZONGZI-000](https://github.com/ZONGZI-000)** — [zongzi-mygo-plugin-beta](https://github.com/ZONGZI-000/zongzi-mygo-plugin-beta) 是本项目的起点：插件骨架、云音乐 / YouTube / 酷我 / B 站 / 播客的接入方式、ffmpeg 转码与播放器兼容性的那些坑，都出自这里。感谢作者把整套实现开源出来。
+- **[@jockcc](https://github.com/jockcc)** — [mygo-music-radio](https://github.com/jockcc/mygo-music-radio) 提供了 Radio Browser 目录的接入思路与可播性判断，电台目录部分参考了它的做法。
+- **[Radio Browser](https://www.radio-browser.info)** — 三万多台电台目录，由社区志愿者维护，免费开放。
 
 ## 说明
 
