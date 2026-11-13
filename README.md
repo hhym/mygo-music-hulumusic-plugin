@@ -71,15 +71,7 @@ git clone https://github.com/hhym/mygo-music-hulumusic-plugin.git \
 
 - **最好自备 ffmpeg**：把可用的 `ffmpeg.exe` 放到 `bin/win32-amd64/` 下即可，插件会直接用，省掉 78MB 下载和出错的概率
 - 自动下载的源在 **GitHub release**，大陆网络可能连不上或很慢——如果一直卡在下载，挂代理，或干脆手动把 ffmpeg 放进上面的目录
-
-## 版本
-
-| 通道 | 版本号形态 | 分支 | 节奏 |
-|---|---|---|---|
-| 稳定版 | `1.0.1` | `master` | **少**，攒够验证过的改动才发 |
-| 测试版 | `1.1.0-beta.7` | `beta` | **多**，随改随发 |
-
-日常更新在 `beta`，稳定版是 `beta` 磨稳后的固化快照。发版流程见 [RELEASING.md](RELEASING.md)。
+发版流程见 [RELEASING.md](RELEASING.md)。
 
 ## 开发
 
