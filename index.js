@@ -5816,6 +5816,74 @@ function ffmpegPath() {
 }
 
 /* ============================================================
+ * ffmpeg 从哪来（设置项）
+ * ------------------------------------------------------------
+ * 跟蜻蜓 FM 插件同款的两个设置：
+ *   · transcode   填 0 关闭转码，直接播原地址（HE-AAC / MPEG Layer II 会报错）
+ *   · ffmpegPath  自定义可执行文件；留空则自动找
+ * 查找顺序：
+ *   1. 用户填的路径
+ *   2. 插件自带 bin/<plat>-<arch>/ffmpeg（都没有才下载）
+ *   3. PATH 上的 ffmpeg / ffmpeg.exe
+ *   4. 常见安装位置（Homebrew / /usr/local / /usr/bin / snap / C:\ffmpeg…）
+ * 每台机器只探一次，结果缓存在 FFMPEG_READY；改了设置会清掉重探。
+ * ============================================================ */
+function settingText(key) {
+  try {
+    if (host && host.setting) return String(host.setting(key) || "").trim();
+  } catch {}
+  return "";
+}
+
+/** 填 0 / off / 关 就关掉转码（跟 proxyMode 那套写法保持一致） */
+function transcodeEnabled() {
+  const v = settingText("transcode");
+  if (!v) return true;
+  const low = v.toLowerCase();
+  return !(low === "0" || low === "off" || low === "no" || low === "false" || low === "关");
+}
+
+/** 依次尝试的可执行文件。自定义路径排第一，用户说在哪就在哪。 */
+function ffmpegCandidates() {
+  const out = [];
+  const custom = settingText("ffmpegPath").replace(/^["']|["']$/g, "");
+  if (custom) out.push(custom);
+  const builtin = ffmpegPath();
+  if (out.indexOf(builtin) < 0) out.push(builtin);
+  const onPath = isWindows() ? "ffmpeg.exe" : "ffmpeg";
+  if (out.indexOf(onPath) < 0) out.push(onPath);
+  const common = isWindows()
+    ? ["C:\\ffmpeg\\bin\\ffmpeg.exe", "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe"]
+    : ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/snap/bin/ffmpeg"];
+  for (const exe of common) if (out.indexOf(exe) < 0) out.push(exe);
+  return out;
+}
+
+let FFMPEG_READY = "";
+/** 探一个能跑的 ffmpeg；返回路径，一个都没有就返回空串（交给 ensureFfmpeg 去下载） */
+async function resolveFfmpegPath() {
+  if (FFMPEG_READY) return FFMPEG_READY;
+  for (const exe of ffmpegCandidates()) {
+    let r;
+    try {
+      r = await runOnce(exe, ["-version"], 5000);
+    } catch {
+      r = { ok: false, out: "" };
+    }
+    /* ⚠️ 判据用 ok，不用「输出里有 ffmpeg version」：
+       MyGo 的 host.spawn 只暴露 stderr，而这版构建把版本打到 stdout，
+       按输出匹配会把好好的文件判成坏的（曾经因此每次启动重下 78MB）。 */
+    if (r && r.ok) {
+      trace("✓ ffmpeg 可用", exe);
+      FFMPEG_READY = exe;
+      return exe;
+    }
+  }
+  trace("✗ 候选里没有能跑的 ffmpeg", ffmpegCandidates().join(" | "));
+  return "";
+}
+
+/* ============================================================
  * ffmpeg 缺失时自动下载
  * ------------------------------------------------------------
  * 162MB 的 ffmpeg 不能塞进插件仓库分发给别人，所以做成：
@@ -6078,8 +6146,17 @@ export function resetProxyCache() {
 }
 
 /** MyGo 在设置项改动后会调这个（如果它调用的话），这里做兼容 */
-export function setSetting() {
+export function setSetting({ key } = {}) {
   resetProxyCache();
+  /* 改了转码开关或 ffmpeg 路径，之前探出来的结果和下载状态就作废 */
+  if (!key || key === "transcode" || key === "ffmpegPath") {
+    FFMPEG_READY = "";
+    try {
+      DOWNLOAD_STATE = "idle";
+      DOWNLOAD_FAILED_AT = 0;
+    } catch {}
+    trace("设置变更，ffmpeg 缓存已清", String(key || "全部"));
+  }
 }
 
 /**
@@ -6097,13 +6174,29 @@ async function serveWithFfmpeg(sourceUrl, userAgent, bitRate = 128, extraHeaders
     console.log("[葫芦] 当前环境没有 host.spawn，跳过转码");
     return null;
   }
+  /* 设置里填了 0：不转码，交给调用方回退到原地址。
+     后果是 HE-AAC / MPEG Layer II / HLS 这些内容播不出来（会报 SBR 或 layer3），
+     这是用户自己的选择。 */
+  if (!transcodeEnabled()) {
+    trace("转码已在设置里关闭", "");
+    return null;
+  }
 
   /* 拿 ffmpeg 路径。
      ⚠️ 不再依赖「先探测 -version 再决定」——那一步在真实 MyGo 里
         因为 spawn 的行为差异一直失败，导致永远判定「没有可用 ffmpeg」。
         改成：直接用路径去 spawn 转码进程，spawn 抛错（文件不存在）
         才触发下载，下载完再试一次。 */
-  let exe = ffmpegPath();
+  let exe = await resolveFfmpegPath();
+  if (!exe) {
+    /* 候选全跑不起来 → 走内置下载，下完再试 */
+    exe = await ensureFfmpeg().catch(() => null) || "";
+  }
+  if (!exe) {
+    trace("✗ 没有可用的 ffmpeg", "");
+    console.log("[葫芦] 找不到可用的 ffmpeg：设置里填「ffmpeg 路径」，或允许插件下载");
+    return null;
+  }
   trace("准备用 ffmpeg", exe);
 
   const port = pickPort();
@@ -6156,8 +6249,20 @@ async function serveWithFfmpeg(sourceUrl, userAgent, bitRate = 128, extraHeaders
     const msg = String((e && e.message) || e);
     trace("✗ ffmpeg spawn 抛错", msg.slice(0, 120));
     console.log("[葫芦] ffmpeg 启动失败: " + msg);
-    /* 文件不存在 → 触发下载，下载完再试一次 */
+    /* 这个路径跑不起来：清掉缓存，重新探一遍（用户可能刚改了设置），
+       实在没有就触发下载，下完再试一次 */
+    FFMPEG_READY = "";
     try {
+      const again = await resolveFfmpegPath();
+      if (again && again !== exe) {
+        exe = again;
+        proc = spawn(exe, args);
+        trace("ffmpeg 换路径后启动", exe + " pid=" + (proc && proc.pid));
+      }
+    } catch {}
+    if (proc) {
+      try { if (proc.closeStdin) proc.closeStdin(); } catch {}
+    } else try {
       const dl = await ensureFfmpeg();
       if (dl && dl !== exe) {
         exe = dl;

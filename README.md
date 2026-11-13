@@ -28,6 +28,16 @@
 - **RoamDial**（[GYRYEZ/mygo-music-roamdial](https://github.com/GYRYEZ/mygo-music-roamdial) 同源目录）— 三万多个真实电台，按国别 / 分类 / 心情筛选；蜻蜓系与 AAC 台自动用 ffmpeg 转 mp3
 - **QQ 音乐** — 搜索（单曲混排 + 专辑/歌手/歌单补充）、专辑 `qqa:` / 歌手 `qqr:` / 歌单 `qqp:` / 榜单 `qqc:` / 歌词，匿名接口，付费曲目自动兜底 YouTube
 
+## 设置
+
+| 设置项 | 说明 |
+|---|---|
+| 代理地址 | 留空默认 `127.0.0.1:7890`，不用代理填 `0` |
+| 转码播放 | 留空或 `1` 开启。HE-AAC(SBR)、MPEG Layer II、HLS 这些播放器解不了的内容会用本机 ffmpeg 实时转 mp3。填 `0` 关闭：直接播原地址，多数会报 `go-aac/pcm: SBR` 或 `only layer3` 错误 |
+| ffmpeg 路径 | 留空自动查找：插件自带 `bin/` → PATH → `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`、`/snap/bin`、`C:\ffmpeg\bin` 等常见位置。也可以填完整路径，如 `C:\ffmpeg\bin\ffmpeg.exe` |
+
+首次转码时如果找不到 ffmpeg，插件会自动下载一份到 `bin/`（约 78MB）。
+
 ## 播放相关
 
 MyGo 的解码器限制很死，踩过不少：
