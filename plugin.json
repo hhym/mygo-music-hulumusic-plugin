@@ -1,7 +1,7 @@
 {
   "id": "hulu-music",
   "name": "葫芦音乐",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "minAppVersion": "0.1.8",
   "main": "index.js",
   "playback": "stream",
@@ -13,10 +13,6 @@
       "search.kuwo.cn",
       "antiserver.kuwo.cn",
       "*.kuwo.cn",
-      "*.youtube.com",
-      "*.ytimg.com",
-      "*.googlevideo.com",
-      "*.googleapis.com",
       "lrclib.net",
       "github.com",
       "objects.githubusercontent.com",
@@ -153,5 +149,5 @@
       "icon": "chart"
     }
   ],
-  "description": "聚合网易云、YouTube、B站、酷我、QQ 与播客/电台的音源插件，多平台互备"
+  "description": "聚合网易云、B站、酷我、QQ 与播客/电台的音源插件，多平台互备（已移除 YouTube 源）"
 }

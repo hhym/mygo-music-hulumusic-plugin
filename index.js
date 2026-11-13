@@ -64,779 +64,6 @@ const KUWO_SEARCH = "http://search.kuwo.cn/r.s";
 const KUWO_CONVERT =
   "http://antiserver.kuwo.cn/anti.s?type=convert_url&format={fmt}&response=url&rid=MUSIC_{rid}";
 
-// ---------- YouTube Music（music.youtube.com 的 WEB_REMIX 目录 + VISIONOS 取流） ----------
-const YTM_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-const YTM_CLIENT_VERSION = "1.20261018.16.00";
-const YTM_CLIENT_NAME = "67"; // WEB_REMIX
-
-// VISIONOS client —— 签发的直链没有 1MB 配额限制，能播完整首
-const YT_VISIONOS = {
-  name: "VISIONOS",
-  ver: "1.02",
-  nameId: 101,
-  ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
-  deviceMake: "Apple",
-  deviceModel: "RealityDevice17,1",
-  osName: "visionOS",
-  osVersion: "26.5.23O471",
-};
-
-// innertube key + visitorData（60 分钟缓存）
-let ytKey = "";
-let ytKeyAt = 0;
-let ytVisitor = "";
-let ytVisitorAt = 0;
-
-// ------------------------- 通用工具 -------------------------
-async function fetchText(url, opts = {}) {
-  // 调用方没指定 UA 就随机取一个（YouTube innertube 那边都显式传，不受影响）
-  const ua = (opts.headers && opts.headers["User-Agent"]) || uaDesktop();
-  /* ⚠️⚠️ 全局默认超时，别删。
-     实测（2026-11-08）：某个电台/平台的接口会接受 TCP 连接但**永不返回数据**，
-     没有超时的 fetch 会一直挂着 —— 表现是「点歌一直转圈」「播客页卡死」
-     「测试脚本跑 4 分钟无输出」。一个挂住的请求能把整条链路拖死。
-     20 秒兜底；调用方自己传了 signal 就用调用方的。 */
-  const res = await fetch(url, {
-    headers: { "User-Agent": ua, ...(opts.headers || {}) },
-    ...opts,
-    signal: opts.signal || AbortSignal.timeout(20000),
-  });
-  const text = await res.text();
-  return { res, text };
-}
-
-
-
-function durToMs(v) {
-  const n = Number(v);
-  if (!isFinite(n) || n <= 0) return 0;
-  return n < 3000 ? Math.round(n * 1000) : Math.round(n);
-}
-
-function parseDur(s) {
-  if (!s) return 0;
-  s = String(s).trim();
-  if (/^\d+$/.test(s)) return durToMs(s);
-  const p = s.split(":").map(Number);
-  if (p.length === 3 && p.every((n) => !isNaN(n))) return (p[0] * 3600 + p[1] * 60 + p[2]) * 1000;
-  if (p.length === 2 && p.every((n) => !isNaN(n))) return (p[0] * 60 + p[1]) * 1000;
-  return 0;
-}
-
-// ------------------------- YouTube Music bootstrap（取 innertube key + visitorData） -------------------------
-async function ytBoot() {
-  // key 从 www.youtube.com/sw.js 抓（仅 12KB，比整张 watch 页 500KB 快得多）
-  async function getKey() {
-    const { text } = await fetchText("https://www.youtube.com/sw.js", {
-      headers: { "User-Agent": YTM_UA },
-    });
-    const m = String(text).match(/"INNERTUBE_API_KEY":"([^"]+)"/);
-    if (!m) throw new Error("yt: 无法获取 innertube key");
-    return m[1];
-  }
-  // visitorData 从 visitor_id 接口换（1KB）
-  async function getVisitor(key) {
-    const { text } = await fetchText(
-      "https://www.youtube.com/youtubei/v1/visitor_id?key=" + key,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "User-Agent": YTM_UA },
-        body: JSON.stringify({
-          context: {
-            client: { clientName: "WEB", clientVersion: "2.20250101.00.00", hl: "en", gl: "US" },
-          },
-        }),
-      }
-    );
-    const d = JSON.parse(text);
-    const rc = (d && d.responseContext) || {};
-    if (!rc.visitorData) throw new Error("visitor_id 无 visitorData");
-    return rc.visitorData;
-  }
-
-  if (ytKey && ytVisitor && Date.now() - ytKeyAt < 60 * 60 * 1000)
-    return { key: ytKey, visitor: ytVisitor };
-
-  const key = await getKey();
-  const visitor = await getVisitor(key);
-  ytKey = key;
-  ytVisitor = visitor;
-  ytKeyAt = Date.now();
-  return { key, visitor };
-}
-
-// YouTube 搜索（主站 ANDROID client，稳定出歌曲；带音乐过滤参数）
-const YT_ANDROID_VER = "20.10.38";
-const YT_ANDROID_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip";
-const YT_SEARCH_PARAMS = "EgIQAQ%3D%3D"; // 音乐搜索过滤位
-
-function ytCtx(opts) {
-  const client = {
-    clientName: "ANDROID",
-    clientVersion: YT_ANDROID_VER,
-    hl: "zh-CN",
-    gl: "CN",
-    userAgent: YT_ANDROID_UA,
-    androidSdkVersion: 34,
-  };
-  /* ⚠️⚠️ clientFormFactor 是把双刃剑，只在 browse 时加（2026-11-09 实测）：
-       · browse 不带它 → 400 INVALID_ARGUMENT（285 字节），拿不到频道页
-       · browse 带上它 → 200，4.3MB 完整频道数据 ✅
-       · search 带上它 → 返回的是**另一套页面结构**（章节/提示类渲染器），
-         里面一个 videoRenderer 都没有 → 搜索解析全线 0 条 ❌
-     所以：browse 传 { noFormFactor: false }（默认带），search 必须显式传
-     { noFormFactor: true } 把它摘掉。 */
-  if (opts && opts.noFormFactor) {
-    // search 用：保持精简（不带 formFactor）
-  } else {
-    client.clientFormFactor = "SMALL_FORM_FACTOR";
-  }
-  return {
-    client: client,
-    user: { lockedSafetyMode: false },
-    request: { useSsl: true },
-  };
-}
-function ytHeaders() {
-  return {
-    "Content-Type": "application/json",
-    "User-Agent": YT_ANDROID_UA,
-    "X-YouTube-Client-Name": "3",
-    "X-YouTube-Client-Version": YT_ANDROID_VER,
-  };
-}
-
-/* ============ YouTube 频道/艺人页（browse） ============
-   ⚠️ browse 必须带 clientFormFactor（见 ytCtx 注释），否则 400。
-   能做什么：
-     · ytBrowseChannel(channelId)        → 拿频道页里的 VL 播放列表 id（艺人 Top songs）
-     · ytArtistSongs(channelId)          → 拉该艺人的歌曲列表（Top songs 播放列表的全部内容）
-   用途：下架歌手「纯搜歌手」时，不用再靠代表作去猜 —— 直接拉他官方频道里的歌。 */
-async function ytBrowse(browseId, params) {
-  const boot = await ytBoot();
-  const body = { context: ytCtx(), browseId: browseId };
-  if (params) body.params = params;
-  const { text } = await fetchText(
-    "https://www.youtube.com/youtubei/v1/browse?key=" + boot.key + "&prettyPrint=false",
-    { method: "POST", headers: ytHeaders(), body: JSON.stringify(body) }
-  );
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-/* 从任意 browse 返回里收集轨道（兼容多种渲染器命名）。
-   ⚠️ YouTube 的字段名一直在变（videoRenderer / lockupViewModel /
-      musicResponsiveListItemRenderer…），所以按「有 videoId 就认」来抓，
-      再做一次去重。 */
-function harvestTracks(node, out, seen) {
-  if (!node || typeof node !== "object") return;
-  if (Array.isArray(node)) {
-    for (const x of node) harvestTracks(x, out, seen);
-    return;
-  }
-  // 直接形态：videoRenderer
-  if (node.videoId && typeof node.videoId === "string" && node.videoId.length === 11) {
-    const vid = node.videoId;
-    if (!seen.has(vid)) {
-      seen.add(vid);
-      const title =
-        (node.title && (node.title.simpleText || ((node.title.runs || []).map((r) => r.text).join("")))) ||
-        "";
-      const owner =
-        (node.ownerText && (node.ownerText.runs || []).map((r) => r.text).join("")) ||
-        (node.longBylineText && (node.longBylineText.runs || []).map((r) => r.text).join("")) ||
-        "";
-      const dur =
-        (node.lengthText &&
-          (node.lengthText.simpleText || ((node.lengthText.runs || []).map((r) => r.text).join("")))) ||
-        "";
-      out.push({
-        id: vid,
-        title: String(title),
-        artist: String(owner),
-        durationText: String(dur),
-        artwork: ((node.thumbnail && node.thumbnail.thumbnails) || []).slice(-1)[0]?.url || "",
-        chanId: "",
-      });
-    }
-  }
-  for (const k of Object.keys(node)) harvestTracks(node[k], out, seen);
-}
-
-/** 拉频道页，返回里面的 VL 播放列表 id 列表（艺人 Top songs 等） */
-async function ytChannelPlaylists(channelId) {
-  const data = await ytBrowse(channelId);
-  if (!data) return [];
-  const s = JSON.stringify(data);
-  const ids = [...new Set([...s.matchAll(/"browseId":"(VL[\w-]+)"/g)].map((m) => m[1]))];
-  return ids;
-}
-
-/** 从 browse 响应里取 continuation token（分页用） */
-function pickContinuation(data) {
-  if (!data) return "";
-  const s = JSON.stringify(data);
-  // continuationItemRenderer / nextContinuationData / continuationCommand 三种形态
-  const m =
-    s.match(/"continuationCommand":\{"token":"([^"]+)"/) ||
-    s.match(/"nextContinuationData":\{[^}]*?"continuation":"([^"]+)"/) ||
-    s.match(/"continuation":"([A-Za-z0-9_%-]{40,})"/);
-  return m ? m[1] : "";
-}
-
-/** 拉一个播放列表（VL 前缀）里的全部曲目 —— 带分页。
-    ⚠️ 一个播放列表可能有很多页（长播放列表），
-       不翻页只能拿到第一页（通常 100 首以内）。
-       分页走 browse + continuation token，最多翻 maxPages 页防止死循环。 */
-async function ytPlaylistTracks(playlistId, maxPages) {
-  const cap = Number(maxPages) > 0 ? Number(maxPages) : 8;
-  const out = [];
-  const seen = new Set();
-  let data = await ytBrowse(playlistId);
-  let page = 0;
-  while (data && page < cap) {
-    harvestTracks(data, out, seen);
-    const token = pickContinuation(data);
-    if (!token) break;
-    page++;
-    data = await ytBrowse(playlistId, null, token).catch(() => null);
-  }
-  return out;
-}
-
-/** 拉某艺人频道里的全部歌曲。
-    两条路并用，取并集：
-      ① 频道页里的 VL 播放列表（Top songs / auto-mix）—— 带分页
-      ② 频道页里出现的所有 videoId（新版频道页直接铺视频网格）
-    ⚠️ Top songs 播放列表只有约 10 首，所以不能只靠它。
-       ANDROID 客户端拿不到 YouTube Music 的艺人专辑结构（无 MPREb），
-       所以这里靠"频道页直铺 + 播放列表分页"尽量多捞。 */
-/* 艺人曲目缓存的索引表 key 与容量上限（常量必须在 ytArtistSongs 之前声明） */
-const ART_CACHE_INDEX = "ytArtIndex";
-const ART_CACHE_MAX = 40;
-
-/** 取某位下架歌手的头像。
-    优先级：
-      ① 已缓存的频道曲目缩略图（0 请求，最快）
-      ② 没有缓存 → 现拉一次频道（限时 3 秒，超时就放弃，不拖慢搜索）
-      ③ 都失败 → 空（交给 UI 兜底）
-    ⚠️ ② 之所以要限时：browse 频道页正常 1-2 秒，但网络差时可能 10 秒+，
-       搜索结果页面不能被它卡住。3 秒内拿不到就先用空头像。
-       拿到之后会写进缓存，下次搜索直接命中（0 请求）。 */
-async function artistThumbOf(name) {
-  /* ⭐ 首选：Apple Music 的专辑封面（当头像用）。
-     ⚠️ 为什么放弃网易（2026-11-09 实测教训）：
-        网易 search/get?type=100 会返回**一堆 AI 蹭名歌手**
-        （搜「赵薇」只回「赵薇薇」，搜「脆弱少女组」回「赵雷/卓文萱/薛凯琪」），
-        严格名字匹配后 25 位里只能拿到 10 位，而且拿到的那张图也是蹭名号的。
-        Apple 干净得多：赵薇/李志/卢广仲/达明一派都能精确命中真歌手，封面是官方专辑图。
-
-     ⚠️ Apple 的 entity=musicArtist **没有 artwork 字段**（只有 artistName/artistId），
-        所以要用 entity=song 搜，从歌曲记录里取 artworkUrl100
-        （那是专辑封面，尺寸 100x100，把 100x100 换成 600x600 就是高清）。
-     ⚠️ country 用 tw：这批下架歌手在台湾店上架更全（cn 店被清）。 */
-  const ck = "artThumb:" + name;
-  try {
-    const v = host.storage.get(ck);
-    if (typeof v === "string" && v) return v;
-  } catch {}
-  // ① Apple Music 专辑封面（严格歌手名匹配）
-  try {
-    const { text } = await fetchText(
-      "https://itunes.apple.com/search?term=" + encodeURIComponent(name) +
-        "&entity=song&limit=20&country=tw",
-      {
-        headers: { "User-Agent": uaDesktop() },
-        signal: AbortSignal.timeout(10000),
-      }
-    );
-    const j = JSON.parse(text);
-    const songs = ((j && j.results) || []).filter((x) => x && x.wrapperType === "track");
-    const simpName = toSimplified(name).replace(/\s/g, "");
-    /* 严格匹配：歌手名去掉空格后完全相等。
-       ⚠️ 不放松成「包含」——「陈升」会命中「劉若英 & 陳昇」，
-          那张封面是合唱专辑的，不是他的个人作品。 */
-    const exact = songs.filter(
-      (x) => toSimplified(String(x.artistName || "")).replace(/\s/g, "") === simpName
-    );
-    const pick = exact.find((x) => x.artworkUrl100) || null;
-    if (pick) {
-      const pic = String(pick.artworkUrl100).replace(/\/\d+x\d+bb\./, "/600x600bb.");
-      try {
-        host.storage.set(ck, pic);
-      } catch {}
-      return pic;
-    }
-  } catch {}
-  // ② 退回 YouTube 频道缓存里的缩略图
-  try {
-    const d = dictOf(name);
-    if (d && d.yt) {
-      const c = host.storage.get("ytArt:" + d.yt);
-      if (c && Array.isArray(c.list)) {
-        const t = c.list.find((x) => x && x.artwork);
-        if (t) return String(t.artwork);
-      }
-    }
-  } catch {}
-  return "";
-}
-
-/* 按字典的 only 白名单筛曲目。
-   ⚠️ 为什么需要：福禄寿 2023 年重组为 DOUDOU，两个名字共用同一个
-      YouTube 频道，而 YouTube 单曲元数据里 **artist 字段是空的**，
-      没法靠署名分开。只能在字典里人工列白名单按曲名区分。
-   ⚠️⚠️ 必须用**精确匹配**（不是 contains）：
-      之前用互相包含，结果「超度我」把「超度我 (Live)」也算成福禄寿，
-      「馬」和「马」繁简归一后也串台，两个歌手页出现大段重叠。
-      现在只归一空格和首尾括号外的标点，括号里的 (Live)/(Remix)/(日文版)
-      保留下来当作区分依据 —— 同名不同版本正好靠它分开。
-   没配 only 的歌手原样返回。 */
-function normSongKey(x) {
-  /* ⚠️ 这里**故意不做繁简转换**：频道里同时有《马》(简体，福禄寿) 和
-     《馬》(繁体，DOUDOU 日文版)，繁简归一后两条会变成同一个 key，
-     没法区分。保留原字形反而正好把它们分开。
-     英文字母统一小写即可。 */
-  return String(x || "")
-    .replace(/\s/g, "")
-    .replace(/[·・]/g, "")
-    .replace(/[「」『』【】"'’“”]/g, "")
-    .toLowerCase();
-}
-function filterByOnly(name, songs) {
-  if (!Array.isArray(songs) || !songs.length) return songs;
-  const d = dictOf(name);
-  if (!d || !Array.isArray(d.only) || !d.only.length) return songs;
-  const keys = new Set(d.only.map(normSongKey).filter(Boolean));
-  return songs.filter((t) => {
-    const k = normSongKey(t.title);
-    if (!k) return false;
-    if (keys.has(k)) return true;
-    /* 频道里有些标题带宣传前缀，比如
-       「DOUDOU｜动画《记忆管理局》OP《忘记了也没关系》发布」
-       —— 去掉「XX｜」前缀和「发布/Official Music Video」尾巴再试一次 */
-    const trimmed = k
-      .replace(/^[^｜|]{1,12}[｜|]/, "")
-      .replace(/(officialmusicvideo|officialvideo|发布|mv|完整版)$/g, "");
-    /* ⚠️ 只做精确匹配，不做任何「包含/前缀」放宽。
-       踩过两次：① 互相包含 →「超度我」把「超度我 (Live)」算给福禄寿；
-                 ② 前缀匹配 →「我用什么把你留住」被
-                    「我用什么把你留住 (Remix)」这条 DOUDOU 白名单捞走。
-       白名单条目就是完整标题，照抄即可，不需要模糊。 */
-    return keys.has(trimmed);
-  });
-}
-
-async function ytArtistSongs(channelId, opts) {
-  /* ⚠️ 结果做本地缓存（host.storage），TTL 7 天。
-     为什么：一个频道的曲目列表基本不变，但每次搜索都要发 2-4 个请求
-     （频道首页 + 播放列表分页），慢且容易被风控。
-     缓存后：第一次 1-2 秒，之后 0 延迟。
-     体积：实测单条 194 字节，一个歌手 50 首 ≈ 10KB，25 位歌手 ≈ 250KB。
-     ⚠️ 用 maxAge 控制是否强制刷新（opts.refresh=true 时跳过缓存）。 */
-  const cacheKey = "ytArt:" + channelId;
-  const TTL = 7 * 24 * 60 * 60 * 1000;
-  if (!(opts && opts.refresh)) {
-    try {
-      const c = host.storage.get(cacheKey);
-      if (c && Array.isArray(c.list) && c.list.length && Date.now() - (c.at || 0) < TTL) {
-        trace("频道曲目命中缓存", channelId.slice(0, 12) + " " + c.list.length + "首");
-        return c.list;
-      }
-    } catch {}
-  }
-
-  const all = [];
-  const seen = new Set();
-  /* ⚠️⚠️ 必须过滤「没有标题」的条目（2026-11-09 踩的坑）：
-     频道首页（browse UC...）里那 52 个 videoId **全是 watchEndpoint**
-     （播放按钮里的跳转指令），不是视频条目 —— 采集后 id 有、标题/歌手/时长全空。
-     结果歌手页显示 52 首「名字是空白」的歌，用户根本没法点。
-     只有 VL 播放列表里的条目才有完整 title/artist/duration。
-     所以：只收有标题的，没标题的直接丢掉。 */
-  const push = (list) => {
-    for (const t of list || []) {
-      if (!t || !t.id || seen.has(t.id)) continue;
-      if (!t.title || !String(t.title).trim()) continue; // 没标题 = 不是真条目
-      seen.add(t.id);
-      all.push(t);
-    }
-  };
-
-  /* ① VL 播放列表优先（唯一有完整元数据的来源），多拉几个提高覆盖
-     ⚠️ 顺序很重要：之前是先频道首页后播放列表，导致 52 个空标题条目
-        先把 all 撑满，真歌反而被 seen 挡在后面。
-     ⚠️⚠️ 不能只拉前 3 个：Topic 频道（如红花会 Hong Hua Hui - Topic）
-        是「一首歌一个播放列表」，12 个列表各 1 首，只拉 3 个就只剩 3 首。
-        所以按列表总数动态取上限，最多 16 个。 */
-  const pls = await ytChannelPlaylists(channelId).catch(() => []);
-  const plCap = Math.min(pls.length, 16);
-  /* 并发拉（每批 4 个）—— 串行 16 个太慢，全并发又容易被限流 */
-  for (let i = 0; i < plCap; i += 4) {
-    const batch = pls.slice(i, Math.min(i + 4, plCap));
-    const got = await Promise.all(batch.map((pl) => ytPlaylistTracks(pl, 2).catch(() => [])));
-    for (const list of got) push(list);
-  }
-
-  // ② 频道首页兜底（新版页面里如果真有 videoRenderer 网格，能补一些）
-  if (all.length === 0) {
-    const home = await ytBrowse(channelId).catch(() => null);
-    if (home) {
-      const tmp = [];
-      harvestTracks(home, tmp, new Set());
-      push(tmp);
-    }
-  }
-
-  // 写缓存（只存必要字段，省体积）
-  if (all.length) {
-    try {
-      host.storage.set(cacheKey, {
-        at: Date.now(),
-        list: all.map((t) => ({
-          id: t.id,
-          title: t.title,
-          artist: t.artist,
-          durationText: t.durationText,
-          artwork: t.artwork,
-          chanId: t.chanId,
-        })),
-      });
-      // 更新索引（channelId + 时间），供 pruneArtistCache 清理用
-      try {
-        const idx = readList(ART_CACHE_INDEX).filter((x) => x && x.id !== channelId);
-        idx.push({ id: channelId, at: Date.now(), n: all.length });
-        writeList(ART_CACHE_INDEX, idx);
-      } catch {}
-      pruneArtistCache();
-    } catch {}
-  }
-  return all;
-}
-
-/* 艺人缓存清理：最多保留 MAX 个频道，超了就删最旧的。
-   ⚠️ host.storage 没有"列出所有 key"的能力，所以自己维护一个索引表。
-      索引只存 channelId + 时间戳，几十字节，可以放心存。 */
-function pruneArtistCache() {
-  try {
-    const idx = readList(ART_CACHE_INDEX);
-    if (idx.length <= ART_CACHE_MAX) return;
-    // 按时间升序，删掉最老的
-    idx.sort((a, b) => (a.at || 0) - (b.at || 0));
-    const drop = idx.splice(0, idx.length - ART_CACHE_MAX);
-    for (const d of drop) {
-      try {
-        host.storage.remove ? host.storage.remove("ytArt:" + d.id) : host.storage.set("ytArt:" + d.id, null);
-      } catch {}
-    }
-    writeList(ART_CACHE_INDEX, idx);
-  } catch {}
-}
-
-/** 多关键词并发搜索并合并去重（下架歌手用：一次搜歌手名、一次搜「歌手名 Topic」） */
-/* 把可能被 YouTube 年龄验证拦掉的查询词换成能出结果的。
-   ⚠️ 背景：搜「阴三儿」这种被标记成人内容的歌手，YouTube 直接返回
-      「确认您的年龄」页（约 8KB，零 videoRenderer）→ 解析出 0 条。
-      实测加歌名或换繁体都能绕过，所以字典里给这类歌手配 safeQuery。
-   只在「查询词里只含歌手名、没有具体歌名」时替换，
-   用户主动搜「阴三儿 北京晚报」时不干预。 */
-function ytSafeQueries(q) {
-  const src = String(q || "").trim();
-  if (!src) return [src];
-  const d = dictOf(src);
-  if (!d || !Array.isArray(d.safeQuery) || !d.safeQuery.length) return [src];
-  /* 纯歌手名（或只带空格/别名）才替换 */
-  const norm = normSongKey(src);
-  const isPure =
-    norm === normSongKey(artistKeyOf(src)) ||
-    (Array.isArray(d.alias) && d.alias.some((a) => norm === normSongKey(a)));
-  if (!isPure) return [src];
-  return d.safeQuery.slice();
-}
-
-/** 从字典里反查「这个查询词对应哪个歌手名」 */
-function artistKeyOf(q) {
-  const s = String(q || "").trim();
-  if (ARTIST_DICT[s]) return s;
-  const simp = toSimplified(s);
-  for (const k of Object.keys(ARTIST_DICT)) {
-    if (toSimplified(k) === simp) return k;
-    /* 也认别名：「陰三兒」「LadyNana」这类写法要能归到同一个歌手 */
-    const d = ARTIST_DICT[k];
-    if (d && Array.isArray(d.alias) && d.alias.some((a) => toSimplified(String(a)) === simp)) return k;
-  }
-  return s;
-}
-
-async function ytSearchMulti(queries) {
-  /* ⚠️ 先做「年龄墙」规避替换：把可能被拦的查询词展开成能出结果的 */
-  const expanded = [];
-  const seenQ = new Set();
-  for (const q of queries) {
-    for (const qq of ytSafeQueries(q)) {
-      const k = String(qq).trim();
-      if (!k || seenQ.has(k)) continue;
-      seenQ.add(k);
-      expanded.push(k);
-    }
-  }
-  const lists = await Promise.all(expanded.map((q) => ytSearch(q).catch(() => [])));
-  const seen = new Set();
-  const out = [];
-  for (const list of lists) {
-    for (const t of list) {
-      if (!t || !t.id || seen.has(t.id)) continue;
-      seen.add(t.id);
-      out.push(t);
-    }
-  }
-
-  /* ⚠️ 字典里登记过的歌手，搜索结果必须再过一遍相关性过滤。
-     原因：这类「下架歌手 / 冷门乐团」在 YouTube 上没有官方频道，
-     只能靠搜索召回，而搜索结果会大量跑偏 ——
-     实测「大买麦乐团」那 20 条里混着《乐队的夏天》鼓手简评、郭富城金曲串烧、
-     甚至柯林·佩里濒死体验的阴谋论视频；「盘古乐队」混进万能青年旅店。
-     规则：标题或歌手名里必须出现歌手名/别名/代表作（繁简都算），否则丢掉。
-     ⚠️ 既然后面还有代表作多路搜，这里不能过滤太狠 ——
-        过滤后少于 3 条就整体退回原结果。 */
-  const knownArtist = queries.map((q) => artistKeyOf(q)).find((n) => {
-    const d = dictOf(n);
-    return !!(d && (Array.isArray(d.hits) || Array.isArray(d.safeQuery)));
-  });
-  if (knownArtist) {
-    const d = dictOf(knownArtist);
-    const names = [knownArtist]
-      .concat(d.alias || [], d.hits || [])
-      .map((x) => toSimplified(String(x)).toLowerCase().replace(/\s/g, ""))
-      .filter(Boolean);
-    const keep = out.filter((t) => {
-      const hay = (toSimplified(String(t.title || "")) + " " + toSimplified(String(t.artist || "")))
-        .toLowerCase()
-        .replace(/\s/g, "");
-      return names.some((n) => n && hay.indexOf(n) >= 0);
-    });
-    /* 过滤后留太少就退回原结果，避免一刀切把页面清空 */
-    if (keep.length >= 3) {
-      out.length = 0;
-      keep.forEach((t) => out.push(t));
-    }
-  }
-  /* 多路搜合并后，再按「频道集中度」重算一次音乐人标记
-     —— 单路搜可能因为结果少（<5 条）没触发，合并后就能判断了。 */
-  if (out.length >= 5) {
-    const freq = new Map();
-    for (const t of out) {
-      const c = String(t.chanId || "");
-      if (!c) continue;
-      freq.set(c, (freq.get(c) || 0) + 1);
-    }
-    if (freq.size) {
-      let topChan = "";
-      let topN = 0;
-      for (const [c, n] of freq) if (n > topN) { topN = n; topChan = c; }
-      if (topN >= 3 && topN / out.length >= 0.15) {
-        for (const t of out) if (t.chanId === topChan) t._ytArtistChan = true;
-        console.log("[葫芦] YT 音乐人识别(合并后)：频道 " + topChan + " 占 " + topN + "/" + out.length);
-      }
-    }
-  }
-  return out;
-}
-
-async function ytSearch(query) {
-  const key = await ytBoot().then((b) => b.key);
-  const url = "https://www.youtube.com/youtubei/v1/search?key=" + key + "&prettyPrint=false";
-  // ⚠️ search 必须显式 noFormFactor:true —— 带上 formFactor 会返回另一套页面结构，解析不出视频条目
-  const body = JSON.stringify({ context: ytCtx({ noFormFactor: true }), query: query, params: YT_SEARCH_PARAMS });
-  const { text } = await fetchText(url, { method: "POST", headers: ytHeaders(), body: body });
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    return [];
-  }
-  const out = [];
-  (function walk(o, d) {
-    if (!o || typeof o !== "object" || d > 22) return;
-    if (Array.isArray(o)) {
-      for (let i = 0; i < o.length; i++) walk(o[i], d + 1);
-      return;
-    }
-    for (const k of Object.keys(o)) {
-      if (k === "videoRenderer" || k === "compactVideoRenderer") {
-        const v = o[k];
-        if (v && v.videoId) {
-          /* 顺手抓出这条视频所属频道的 UC id —— 后面用它判断
-             「这个频道是不是 YouTube 官方音乐人频道（Topic/官方艺人）」。 */
-          let chanId = "";
-          try {
-            const be =
-              (v.ownerText && v.ownerText.runs && v.ownerText.runs[0] &&
-                v.ownerText.runs[0].navigationEndpoint &&
-                v.ownerText.runs[0].navigationEndpoint.browseEndpoint) ||
-              (v.longBylineText && v.longBylineText.runs && v.longBylineText.runs[0] &&
-                v.longBylineText.runs[0].navigationEndpoint &&
-                v.longBylineText.runs[0].navigationEndpoint.browseEndpoint);
-            if (be && be.browseId) chanId = String(be.browseId);
-          } catch {}
-          out.push({
-            id: v.videoId,
-            title:
-              ((v.title && v.title.runs) || []).map((x) => x.text).join("") ||
-              (v.title && v.title.simpleText) ||
-              "",
-            artist:
-              ((v.ownerText && v.ownerText.runs) || []).map((x) => x.text).join("") ||
-              ((v.longBylineText && v.longBylineText.runs) || []).map((x) => x.text).join("") ||
-              "",
-            durationText:
-              (v.lengthText &&
-                (v.lengthText.simpleText ||
-                  ((v.lengthText.runs || []).map((x) => x.text || "").join("")))) ||
-              "",
-            artwork: ((v.thumbnail && v.thumbnail.thumbnails) || []).slice(-1)[0].url || "",
-            chanId: chanId,
-          });
-        }
-      }
-      walk(o[k], d + 1);
-    }
-  })(data, 0);
-
-  /* 【YouTube Music「音乐人」加权】
-     实测（2026-11-08）：ANDROID 客户端的搜索响应里**没有** musicArtistRenderer /
-     musicResponsiveListItemRenderer 节点（那些是 YTM 网页版才有的），
-     但每条 videoRenderer 都带 `ownerText.runs[0].navigationEndpoint.browseEndpoint.browseId`
-     = 频道 UC id。这已经够用了：
-       · 官方音乐人频道（Topic / Artist）的 id 是稳定的 UC 号，且**同一歌手所有官方稿件
-         都挂在同一个 UC 下**；
-       · 搬运号/粉丝号各有各的 UC，且通常一条视频一个号。
-     所以统计「本批结果里各 UC 出现次数」，**出现次数最多的那个 UC 就是这位歌手的官方频道**
-     （同一歌手的官方曲目会大量集中），把该 UC 下的条目加分，其它 UC 的降权。
-     这比按频道名猜「- Topic」可靠：官方频道名可能叫「周杰倫 Jay Chou」而不是「周杰伦 - Topic」。 */
-  if (out.length >= 5) {
-    const freq = new Map();
-    for (const t of out) {
-      const c = String(t.chanId || "");
-      if (!c) continue;
-      freq.set(c, (freq.get(c) || 0) + 1);
-    }
-    if (freq.size) {
-      let topChan = "";
-      let topN = 0;
-      for (const [c, n] of freq) {
-        if (n > topN) { topN = n; topChan = c; }
-      }
-      // 至少占 15% 才认（否则是噪声，不是「官方集中」）
-      if (topN >= 3 && topN / out.length >= 0.15) {
-        for (const t of out) {
-          if (t.chanId === topChan) t._ytArtistChan = true;
-        }
-        console.log(
-          "[葫芦] YT 音乐人识别：频道 " + topChan + " 占 " + topN + "/" + out.length + " 条 → 官方音乐人加权"
-        );
-      }
-    }
-  }
-  return out;
-}
-
-// YouTube Music 取流（VISIONOS client，无 1MB 配额限制）
-async function ytStream(videoId) {
-  const { key, visitor } = await ytBoot();
-  const url = "https://www.youtube.com/youtubei/v1/player?key=" + key + "&prettyPrint=false";
-  const body = {
-    context: {
-      client: {
-        clientName: YT_VISIONOS.name,
-        clientVersion: YT_VISIONOS.ver,
-        deviceMake: YT_VISIONOS.deviceMake,
-        deviceModel: YT_VISIONOS.deviceModel,
-        userAgent: YT_VISIONOS.ua,
-        osName: YT_VISIONOS.osName,
-        osVersion: YT_VISIONOS.osVersion,
-        hl: "zh-CN",
-        gl: "CN",
-      },
-      user: { lockedSafetyMode: false },
-      request: { useSsl: true },
-    },
-    visitorData: visitor,
-    videoId: videoId,
-    contentCheckOk: true,
-    racyCheckOk: true,
-  };
-  const { text } = await fetchText(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": YT_VISIONOS.ua,
-      "X-YouTube-Client-Name": String(YT_VISIONOS.nameId),
-      "X-YouTube-Client-Version": YT_VISIONOS.ver,
-      "X-Goog-Visitor-Id": visitor,
-    },
-    body: JSON.stringify(body),
-  });
-  const data = JSON.parse(text);
-  const ps = data.playabilityStatus || {};
-  if (ps.status !== "OK")
-    throw "yt: " + (ps.status || "?") + " " + String(ps.reason || "").slice(0, 40);
-  const sd = data.streamingData || {};
-  const all = (sd.formats || []).concat(sd.adaptiveFormats || []);
-  const audios = all
-    .filter((f) => f.url && /audio/.test(f.mimeType || ""))
-    .map((f) => ({
-      itag: f.itag,
-      mime: (f.mimeType || "").split(";")[0].trim(),
-      bitrate: Number(f.bitrate || 0),
-      url: f.url,
-      size: Number(f.contentLength || 0),
-    }))
-    .sort((a, b) => b.bitrate - a.bitrate);
-  if (!audios.length) throw "yt: 无音频流";
-
-  /* ⚠️ YouTube 的 audio/mp4（itag 139/140）全是 DASH 分片流：
-       文件头是 "ftypdash"，样本数据在 moof 里，stbl 表是空的。
-     MyGo 的 mp4 解析器读到空 stbl 就抛 "mp4: bad sample table"，
-     播放器直接报错。
-
-     audio/webm（itag 251/250/249，Opus）不受影响 —— MyGo 走 EBML/Ogg 解析，
-     不碰 stbl 表，实测文件头 1A 45 DF A3 正常。
-
-     所以**优先选 webm**，mp4 只在没有 webm 时才兜底（并标记为实验性）。
-     代价：Opus 160kbps vs AAC 128kbps，音质反而更好。 */
-  const WEBM_PREF = [251, 250, 249];
-  const MP4_PREF = [141, 140, 139];
-  let pick = null;
-  for (const itag of WEBM_PREF) {
-    const hit = audios.find((a) => a.itag === itag);
-    if (hit) {
-      pick = hit;
-      break;
-    }
-  }
-  if (!pick) {
-    // 没命中标准 webm itag，就按 mime 找任意 webm
-    pick = audios.filter((a) => a.mime.indexOf("webm") >= 0).sort((a, b) => b.bitrate - a.bitrate)[0];
-  }
-  if (!pick) {
-    for (const itag of MP4_PREF) {
-      const hit = audios.find((a) => a.itag === itag);
-      if (hit) {
-        pick = hit;
-        break;
-      }
-    }
-  }
-  if (!pick) pick = audios[0];
-  // webm → ogg（MyGo 的 EBML/Ogg 通道）；mp4 容器 → 也标 ogg 是错的，标 m4a 让 app 按内容探测
-  const type = pick.mime.indexOf("webm") >= 0 ? "ogg" : "m4a";
-  return { url: pick.url, type, bitrate: pick.bitrate };
-}
 
 // ------------------------- 音频格式探测 -------------------------
 /* ⚠️ MyGo 的 mp3 解码器是 github.com/hajimehoshi/go-mp3，限制很死：
@@ -930,6 +157,42 @@ async function checkAudioUrl(url, timeoutMs = 6000) {
     try { clearTimeout(timer); } catch {}
     return { ok: true, fmt: "unknown", why: "探测失败(放行)" };
   }
+}
+
+// ------------------------- 通用工具 -------------------------
+async function fetchText(url, opts = {}) {
+  // 调用方没指定 UA 就随机取一个（YouTube innertube 那边都显式传，不受影响）
+  const ua = (opts.headers && opts.headers["User-Agent"]) || uaDesktop();
+  /* ⚠️⚠️ 全局默认超时，别删。
+     实测（2026-11-08）：某个电台/平台的接口会接受 TCP 连接但**永不返回数据**，
+     没有超时的 fetch 会一直挂着 —— 表现是「点歌一直转圈」「播客页卡死」
+     「测试脚本跑 4 分钟无输出」。一个挂住的请求能把整条链路拖死。
+     20 秒兜底；调用方自己传了 signal 就用调用方的。 */
+  const res = await fetch(url, {
+    headers: { "User-Agent": ua, ...(opts.headers || {}) },
+    ...opts,
+    signal: opts.signal || AbortSignal.timeout(20000),
+  });
+  const text = await res.text();
+  return { res, text };
+}
+
+
+
+function durToMs(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return 0;
+  return n < 3000 ? Math.round(n * 1000) : Math.round(n);
+}
+
+function parseDur(s) {
+  if (!s) return 0;
+  s = String(s).trim();
+  if (/^\d+$/.test(s)) return durToMs(s);
+  const p = s.split(":").map(Number);
+  if (p.length === 3 && p.every((n) => !isNaN(n))) return (p[0] * 3600 + p[1] * 60 + p[2]) * 1000;
+  if (p.length === 2 && p.every((n) => !isNaN(n))) return (p[0] * 60 + p[1]) * 1000;
+  return 0;
 }
 
 /* ============================================================
@@ -3428,7 +2691,6 @@ async function neSearchTyped(query, type, limit = 20) {
 /* 来源前缀。英文缩写和中文名都认 —— 用户手打「YouTube:晴天」和
    「yt:晴天」是同一个意思。suggest 里下发的是中文名（普通用户看不懂 yt/ne）。 */
 const SOURCE_PREFIX = [
-  { re: /^(?:yt|youtube|油管)\s*[:：]\s*(.+)$/i, only: "yt" },
   { re: /^(?:ne|wy|netease|wangyi|网易云|网易)\s*[:：]\s*(.+)$/i, only: "ne" },
   { re: /^(?:kw|kuwo|酷我)\s*[:：]\s*(.+)$/i, only: "kw" },
   { re: /^(?:bi|bili|bilibili|bzhan|b站|B站)\s*[:：]\s*(.+)$/i, only: "bi" },
@@ -3468,7 +2730,7 @@ export async function suggest({ query }) {
   if (already.only) return [];
 
   const out = [q]; // 第一条永远是原词 = 聚合搜索
-  for (const name of ["YouTube", "网易云", "B站", "酷我"]) {
+  for (const name of ["网易云", "B站", "酷我", "QQ"]) {
     out.push(name + ":" + q);
   }
   return out;
@@ -3530,82 +2792,7 @@ async function searchLocal({ query, kind, offset }) {
          「歌手《专辑名》歌曲名」
          「歌手 - 歌曲名 (专辑: 专辑名)」
        都解析不到就退化成「这位歌手」一张总专辑，至少比把同名小号端上来强。 */
-    const dlAlb = delistedHit(query);
-    if (dlAlb) {
-      try {
-        const ytTracks = await ytSearchMulti([
-          dlAlb + " Topic",
-          dlAlb,
-          ...aliasesOf(dlAlb).map((a) => a + " Topic"),
-        ]);
-        const byAlbum = new Map();
-        let fallbackCover = "";
-        for (const t of ytTracks || []) {
-          const title = String(t.title || "");
-          // 只认「标题里确实有这个歌手」的条目
-          const looksMine =
-            isSameArtistStrict(t.artist || "", dlAlb) ||
-            title.toLowerCase().indexOf(String(dlAlb).toLowerCase()) >= 0 ||
-            aliasesOf(dlAlb).some((a) => a && title.toLowerCase().indexOf(a.toLowerCase()) >= 0);
-          if (!looksMine) continue;
-          if (!fallbackCover) fallbackCover = t.thumbnail || t.artwork || "";
-          const an = pickAlbumNameFromTitle(title, dlAlb);
-          if (!an || isCoverLikeTitle(an)) continue;
-          const key = normTitle(an);
-          if (!byAlbum.has(key)) {
-            byAlbum.set(key, {
-              id: "yta:" + encodeURIComponent(an),
-              name: an,
-              artists: [{ id: "yda:" + dlAlb, name: dlAlb }],
-              imageUrl: t.thumbnail || t.artwork || "",
-              artwork: t.thumbnail || t.artwork || "",
-              trackCount: 0,
-            });
-          }
-          byAlbum.get(key).trackCount += 1;
-        }
-        const albums = [...byAlbum.values()].sort((a, b) => b.trackCount - a.trackCount);
-        if (albums.length) {
-          console.log("[葫芦] 专辑（下架歌手→YouTube）：「" + dlAlb + "」解析出 " + albums.length + " 张");
-          return { albums, more: false };
-        }
-        /* 一张都解析不出来（下架歌手的视频多是搬运号，命名不规范）——
-           退化成「这位歌手」一张总专辑，点进去 artist() 拉全部曲目。 */
-        if (ytTracks && ytTracks.length) {
-          console.log("[葫芦] 专辑（下架歌手→YouTube）：标题无专辑信息，退化为总专辑");
-          return {
-            albums: [
-              {
-                id: "yda:" + dlAlb,
-                name: dlAlb,
-                artists: [{ id: "yda:" + dlAlb, name: dlAlb }],
-                imageUrl: fallbackCover,
-                artwork: fallbackCover,
-                trackCount: ytTracks.length,
-              },
-            ],
-            more: false,
-          };
-        }
-        console.log("[葫芦] 专辑（下架歌手→YouTube）：「" + dlAlb + "」YouTube 也没结果");
-      } catch (e) {
-        console.log("[葫芦] YouTube 专辑失败：" + String(e.message || e).slice(0, 60));
-      }
-      // 完全没结果 → 只留总专辑条目（保证 UI 里歌手页能点进去）
-      return {
-        albums: [
-          {
-            id: "yda:" + dlAlb,
-            name: dlAlb,
-            artists: [{ id: "yda:" + dlAlb, name: dlAlb }],
-            imageUrl: "",
-            artwork: "",
-            trackCount: 0,
-          },
-        ],
-        more: false,
-      };
-    }
+
     /* 【歌手目录优先】判定查询词是歌手名时，直接用歌手 id 拉他的正版专辑目录。
        这是之前那版源踩出来的正解：专辑搜索按名字搜，网易云会把同名翻唱合集、
        别人的同名专辑、山寨小号全倒进来（搜「林宥嘉」30 条里大半不是他的唱片）；
@@ -3692,19 +2879,7 @@ async function searchLocal({ query, kind, offset }) {
        同名空壳（实测搜「李志」返回 nar:33603544，点进去没有他的歌）。
        只要命中名单，直接造 yda: 兜底条目，artist() 会从 YouTube 拉歌，
        比放一个点进去空空的网易条目强。 */
-    const dlA = delistedHit(query);
-    if (dlA) {
-      console.log("[葫芦] 下架歌手「" + dlA + "」→ 直接造 yda: 兜底条目");
-      /* 头像：用字典里官方频道已知的第一条视频缩略图。
-         ⚠️ 之前写死 imageUrl: "" —— 搜索结果里 25 位下架歌手全是空白头像。
-         这里用同步可取的信息（缓存过就用缓存），取不到就留空，
-         由 artist() 页面加载时再补（那边会拉频道数据）。 */
-      const cover = await artistThumbOf(dlA);
-      return {
-        artists: [{ id: "yda:" + dlA, name: dlA, imageUrl: cover, artwork: cover }],
-        more: false,
-      };
-    }
+
     try {
       const rawArt = (await neSearchTyped(query, 100, 30)).artists || [];
       const artists = rawArt.map(neArtistToArtist);
@@ -3725,13 +2900,6 @@ async function searchLocal({ query, kind, offset }) {
       /* 下架歌手兜底：网易艺人库把这些人整体清掉，搜「赵薇」artists 一条不出。
          但用户要求在歌手页也能找到他们 → 构造一个 yda: 虚拟歌手条目，
          点进去 artist() 会从 YouTube 拉歌。 */
-      if (!deduped.length) {
-        const dl = delistedHit(query);
-        if (dl) {
-          console.log("[葫芦] 下架歌手「" + dl + "」网易无艺人 → 造 yda: 兜底条目");
-          return { artists: [{ id: "yda:" + dl, name: dl, imageUrl: "", artwork: "" }], more: false };
-        }
-      }
       for (const a of deduped) {
         artistCache.set(String(a.id).slice(4), { name: a.name, artwork: a.imageUrl });
       }
@@ -3854,7 +3022,6 @@ async function searchLocal({ query, kind, offset }) {
 
   const wantNe = !only || only === "ne";
   const wantKw = !only || only === "kw";
-  const wantYt = !only || only === "yt";
   const wantBi = !only || only === "bi";
   const wantQq = !only || only === "qq";
 
@@ -3923,142 +3090,7 @@ async function searchLocal({ query, kind, offset }) {
       }
     })(),
     wantKw ? kuwoSearch(q).catch(() => []) : Promise.resolve([]),
-    (async () => {
-      if (!wantYt) return [];
-      /* 下架歌手：用「中文原名 + 原名 Topic + 中文别名(繁体) + 别名 Topic」多路搜。
-         ⚠️⚠️ 繁体必须进搜索词！
-            实测搜「赵薇」返回的全是简体标题的搬运号和新闻
-            （赵薇作品被多平台下架 / 赵薇瞒了20年……），一条正经音乐都没有；
-            而搜「趙薇」能出「趙薇·情深深雨濛濛」「【一直下雨的星期天】/趙薇」。
-            YouTube 上这批港台老歌的标题基本都是繁体，只搜简体等于没搜。
-         ⚠️ 但**纯英文别名不能进搜索词** —— 实测搜 "FragileGirls" 会返回一堆
-            "Fragile Girl Defeats a Top Fighter" 这种无关英文视频，把真音源全挤掉。
-            所以只挑「含中文的别名」进搜索，英文别名继续只在打分阶段认人。 */
-      if (!delisted) return ytSearch(q).catch(() => []);
-      const cnAliases = aliasesOf(delisted).filter(
-        (a) => a && /[\u4e00-\u9fff]/.test(a) && a.toLowerCase() !== String(q).toLowerCase()
-      );
-      /* ⚠️⚠️ 配了 safeQuery 的歌手（如阴三儿）**不能**加 " Topic" 查询。
-         实测「阴三儿 Topic」会命中「龍胆紫 - Topic」—— 那是阴三儿成员后来
-         组的另一个组合，YouTube 把发行方署名挂成龍胆紫，于是拉进来 34 首
-         全是《穷孩子》《Be Water》这类龍胆紫的歌，一首 IN3 的都没有。
-         这类歌手一律只走 safeQuery 里那几条实测有效的词。 */
-      const dq = dictOf(delisted);
-      const hasSafe = !!(dq && Array.isArray(dq.safeQuery) && dq.safeQuery.length);
-      const queries = hasSafe ? dq.safeQuery.slice() : [q, q + " Topic"];
-      if (!hasSafe) {
-        for (const a of cnAliases) {
-          queries.push(a);
-          queries.push(a + " Topic");
-        }
-      }
-      /* ⚠️⚠️ A 方案：整句里如果还有「歌名部分剩下」，说明用户是在找这首歌，
-         这时**不要**再补代表作 —— 否则「寻找 李志」会变成"李志全集"，
-         用户要的《寻找》被埋掉。
-         只有整句里除歌手名外什么都不剩（纯搜歌手）才补代表作。 */
-      const songPart = String(q)
-        .split(delisted).join("")
-        .replace(/[\s\-_|·,，.。()（）【】\[\]「」"'"'#]/g, "");
-      const pureArtist = songPart.length < 2;
-      if (pureArtist) {
-        const hits = hitsOf(delisted).slice(0, 3);
-        for (const h of hits) {
-          queries.push(delisted + " " + h);
-          queries.push(h + " " + delisted);
-        }
-        console.log("[葫芦] 下架歌手纯搜歌手：" + delisted + " → " + queries.length + " 路（补 " + hits.length + " 首代表作）");
-      } else {
-        console.log("[葫芦] 下架歌手歌名优先：" + q + "（歌名部分「" + songPart + "」，不补代表作）");
-      }
-      /* ⭐ 纯搜歌手时的「正路」：先搜索找出他的官方频道（- Topic 频道），
-         再 browse 那个频道页，直接拉他官方频道的曲目列表。
-         这条路拿到的都是真歌，不会被新闻视频挤掉，也不靠代表作去猜。
-         实测（2026-11-09）：赵薇 Topic 频道能拉到《舊玩具》《天使旅行箱》
-         《多愛自己一些》等真歌，全是搜索结果里根本看不到的。 */
-      const [searchRes, chanRes] = await Promise.all([
-        ytSearchMulti(queries).catch(() => []),
-        pureArtist
-          ? (async () => {
-              try {
-                // ① 字典里有官方频道 ID → 直接用，不用猜
-                const dInfo = dictOf(delisted);
-                const known =
-                  (dInfo && dInfo.yt) ||
-                  DELISTED_CHANNELS[delisted] ||
-                  DELISTED_CHANNELS[toSimplified(delisted)];
-                if (known) {
-                  const songs = await ytArtistSongs(known).catch(() => []);
-                  if (songs.length) {
-                    console.log("[葫芦] 官方频道(已登记)拉到 " + songs.length + " 首：" + known);
-                    return songs;
-                  }
-                  console.log("[葫芦] 已登记频道拉取失败，退回搜索猜频道");
-                }
-                /* ⚠️⚠️ 配了 safeQuery 的歌手直接放弃「猜频道」。
-                   实测阴三儿：搜「阴三儿 Topic」命中「龍胆紫 - Topic」，
-                   第 ③ 步「退回出现次数最多」会选中它，然后 34 首龍胆紫的作品
-                   全被当成 IN3 塞进搜索页（《穷孩子》《Be Water》《都知道》…）。
-                   这类歌手只靠 safeQuery 的搜索结果，不猜频道。 */
-                if (dInfo && Array.isArray(dInfo.safeQuery) && dInfo.safeQuery.length) {
-                  console.log("[葫芦] " + delisted + " 配了 safeQuery，跳过猜频道");
-                  return [];
-                }
-                // ② 没登记 → 用「歌手名 Topic」搜，靠频道名判官方
-                const probe = await ytSearch(delisted + " Topic").catch(() => []);
-                /* 找官方频道：优先「频道名含歌手名 + Topic」的。
-                   ⚠️ 不能只按出现次数最多来选 —— 实测搜「赵薇」时，
-                      出现最多的是某个搬运号（3/20），而不是官方 Topic 频道
-                      （1/20）。官方 Topic 频道才是唱片公司直传的音频库。 */
-                const nameByChan = new Map();
-                const freq = new Map();
-                for (const t of probe || []) {
-                  const c = String(t.chanId || "");
-                  if (!c) continue;
-                  freq.set(c, (freq.get(c) || 0) + 1);
-                  if (!nameByChan.has(c)) nameByChan.set(c, String(t.artist || ""));
-                }
-                const dl = String(delisted).toLowerCase();
-                const simpDl = toSimplified(dl);
-                let topChan = "";
-                // ① 优先：频道名含歌手名且是 Topic 频道
-                for (const [c, nm] of nameByChan) {
-                  const n = String(nm).toLowerCase();
-                  const isTopic = /-\s*topic\s*$/i.test(n);
-                  const hasName = n.indexOf(dl) >= 0 || toSimplified(n).indexOf(simpDl) >= 0;
-                  if (isTopic && hasName) { topChan = c; break; }
-                }
-                // ② 退一步：频道名含歌手名（非 Topic 也算，官方主频道）
-                if (!topChan) {
-                  for (const [c, nm] of nameByChan) {
-                    const n = String(nm).toLowerCase();
-                    if (n.indexOf(dl) >= 0 || toSimplified(n).indexOf(simpDl) >= 0) { topChan = c; break; }
-                  }
-                }
-                // ③ 最后才退回"出现次数最多"
-                if (!topChan) {
-                  let topN = 0;
-                  for (const [c, n] of freq) if (n > topN) { topN = n; topChan = c; }
-                }
-                if (!topChan) return [];
-                const songs = await ytArtistSongs(topChan).catch(() => []);
-                if (songs.length) console.log("[葫芦] 频道页拉到 " + songs.length + " 首：" + topChan);
-                return songs;
-              } catch (e) {
-                console.log("[葫芦] 频道页拉取失败: " + ((e && e.message) || e).slice(0, 60));
-                return [];
-              }
-            })()
-          : Promise.resolve([]),
-      ]);
-      /* 频道页拉到的歌：标官方标记 + 补歌手名。
-         ⚠️ 频道页返回的 ownerText 经常是空的（Topic 频道没填 owner），
-            导致 UI 上歌手显示成「YouTube Music」。这里统一填成歌手本人。 */
-      for (const t of chanRes || []) {
-        t._ytArtistChan = true;
-        if (!t.artist || /^youtube\s*music$/i.test(String(t.artist).trim())) t.artist = String(delisted);
-      }
-      return (searchRes || []).concat(chanRes || []);
-    })(),
+    Promise.resolve([]), // YouTube 源已移除
     wantBi ? biliSearch(q, 20).catch(() => []) : Promise.resolve([]),
     wantQq ? qqSearch(q, 20).catch((e) => { console.log("[葫芦] QQ 搜索失败: " + (e && e.message)); return []; }) : Promise.resolve([]),
   ]);
@@ -5510,21 +4542,7 @@ export async function album({ id }) {
   if (qqAlb) return qqAlbumPage(qqAlb[1]);
   /* 下架歌手的虚拟专辑（ydalb:<歌手名>）—— 就是该歌手「全部歌曲」。
      直接复用 artist() 的拉取逻辑，保证歌手页和专辑页看到同一份数据。 */
-  if (String(id).startsWith("ydalb:")) {
-    const name = String(id).slice(6);
-    const a = await artist({ id: "yda:" + name });
-    return {
-      album: {
-        id,
-        name: name + " · 全部歌曲",
-        artists: [{ id: "yda:" + name, name }],
-        imageUrl: a.artist.imageUrl || "",
-        artwork: a.artist.artwork || "",
-        trackCount: a.tracks.length,
-      },
-      tracks: a.tracks,
-    };
-  }
+
   const m = /^nea:(\d+)$/.exec(String(id));
   if (!m) throw fail("unavailable", "无法识别的专辑");
   const albumId = m[1];
@@ -5552,72 +4570,7 @@ export async function artist({ id }) {
   /* QQ 歌手（qqr:<singermid>） */
   const qqSinger = /^qqr:(.+)$/.exec(String(id));
   if (qqSinger) return qqArtistPage(qqSinger[1]);
-  /* 下架歌手兜底：网易艺人库里查不到（被清掉），歌手页改从 YouTube 拉歌。
-     id 形如 yda:<歌手名>。 */
-  if (String(id).startsWith("yda:")) {
-    const name = String(id).slice(4);
-    /* ⚠️ 优先走字典里登记的官方频道 —— 比搜索结果准得多。
-       搜「赵薇」返回的全是新闻，靠它拉不到歌；直接 browse 官方 Topic 频道
-       才有《舊玩具》《天使旅行箱》这些真作品。 */
-    const dInfo = dictOf(name);
-    let tracks = [];
-    let coverImg = "";
-    if (dInfo && dInfo.yt) {
-      const rawSongs = await ytArtistSongs(dInfo.yt).catch(() => []);
-      /* ⚠️ 共用频道（福禄寿 / DOUDOU）：按 only 白名单只留属于本名字的歌 */
-      const songs = filterByOnly(name, rawSongs);
-      tracks = songs.map((t) => ({
-        id: "yt:" + t.id,
-        name: t.title,
-        artists: [{ name: dInfo.ytName || name }],
-        artwork: t.artwork || "",
-        duration: parseDur(t.durationText) || undefined,
-        provider: "youtube",
-      }));
-      // 封面：优先用该频道视频的缩略图（有真实视觉），没有就留空由上层兜底
-      if (songs.length) coverImg = songs[0].artwork || "";
-    }
-    // 字典里没登记频道 / 频道拉不到 → 退回搜索（含代表作多路搜）
-    if (!tracks.length) {
-      const raw = await ytSearchMulti([name + " Topic", name]).catch(() => []);
-      const hits = hitsOf(name).slice(0, 3);
-      const multi = hits.length
-        ? await ytSearchMulti(hits.map((h) => name + " " + h)).catch(() => [])
-        : [];
-      const merged = raw.concat(multi);
-      tracks = merged
-        .slice(0, 60)
-        .map((t) => ({
-          id: "yt:" + t.id,
-          name: t.title,
-          artists: [{ name: t.artist || name }],
-          artwork: t.artwork,
-          duration: parseDur(t.durationText) || undefined,
-          provider: "youtube",
-        }))
-        .filter((t) => t.name);
-      if (!coverImg && merged.length) coverImg = merged[0].artwork || "";
-    }
-    remember(tracks);
-    return {
-      artist: { id, name, imageUrl: coverImg, artwork: coverImg },
-      tracks,
-      /* ⚠️ 专辑先留空数组（YouTube 频道页拿不到官方专辑结构），
-         但把「全部歌曲」做成一个虚拟专辑，避免专辑页彻底空着。 */
-      albums: tracks.length
-        ? [
-            {
-              id: "ydalb:" + name,
-              name: name + " · 全部歌曲",
-              imageUrl: coverImg,
-              artwork: coverImg,
-              artists: [{ id, name }],
-              trackCount: tracks.length,
-            },
-          ]
-        : [],
-    };
-  }
+
   const m = /^nar:(\d+)$/.exec(String(id));
   if (!m) throw fail("unavailable", "无法识别的歌手");
   const artistId = m[1];
@@ -6498,64 +5451,6 @@ async function pickPlayable(candidates) {
   return null;
 }
 
-/** 某条 YouTube 视频播不了时，用同曲元数据再搜，换别的上传版本 */
-async function retryOtherYoutubeUpload(currentId, err) {
-  const meta = trackMeta.get(String(currentId));
-  if (!meta || !meta.name) return null;
-  try {
-    // 去掉标题里的装饰词再搜，命中率更高
-    const clean = String(meta.name)
-      .replace(/[【\[][^】\]]*[】\]]/g, " ")
-      .replace(/(歌词版|lyrics?|官方MV|Official\s*Music\s*Video|無損|无损|FLAC|HD|高清)/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    const kw = meta.artist && clean.indexOf(meta.artist) < 0 ? clean + " " + meta.artist : clean;
-    const list = await ytSearch(kw);
-    if (!list || !list.length) return null;
-
-    /* ⚠️ 换源必须严格校验，否则会换到毫不相干的视频。
-       实测踩过：给「李志—下雨」换源，搜出来第一条是「#张新成 #张子枫 疯批CP」，
-       能播但完全是别的东西。用户听到的是噪声，比报错还糟。
-
-       校验规则：
-         ① 候选标题必须包含原歌名的核心片段（取最长的那段中文/英文词）
-         ② 或者歌手名必须出现在标题/频道里
-       两条都不满足就跳过。 */
-    const coreSegs = String(meta.name)
-      .split(/[—–\-\|丨\/、，,：:（）()【】\[\]【】\s]+/)
-      .map((x) => x.trim())
-      .filter((x) => x.length >= 2)
-      .sort((a, b) => b.length - a.length);
-    const core = coreSegs[0] || clean;
-    const artistLc = String(meta.artist || "").toLowerCase();
-    const titleHasCore = (title) => {
-      const t = String(title || "").toLowerCase();
-      // 核心片段命中，或任意一段 2 字以上的片段命中
-      return t.indexOf(core.toLowerCase()) >= 0 || coreSegs.some((s) => s.length >= 2 && t.indexOf(s.toLowerCase()) >= 0);
-    };
-
-    for (const cand of list.slice(0, 6)) {
-      if (cand.id === String(currentId).slice(3)) continue; // 跳过自己
-      const candTitle = String(cand.title || "");
-      const candArtist = String(cand.artist || "");
-      const artistHit = artistLc && (candTitle.toLowerCase().indexOf(artistLc) >= 0 || candArtist.toLowerCase().indexOf(artistLc) >= 0);
-      if (!titleHasCore(candTitle) && !artistHit) continue; // 不相关，跳过
-      try {
-        const st = await ytStream(cand.id);
-        if (!st || !st.url) continue;
-        // YouTube 给的是 webm，MyGo 播不了，必须转码
-        const served = await serveWithFfmpeg(st.url, YT_ANDROID_UA, 128);
-        if (!served) continue;
-        console.log("[葫芦] YouTube 换源成功：" + candTitle.slice(0, 40));
-        return { url: served.url, type: "mp3" };
-      } catch {
-        /* 换下一条 */
-      }
-    }
-  } catch {}
-  return null;
-}
-
 /** 带超时的 fetch。⚠️ 网易云 outer 一卡就会永远等下去，
     直到 MyGo 的 30 秒超时把整个插件进程干掉，表现就是「无法播放」。 */
 async function fetchTimeout(url, opts = {}, ms = 8000) {
@@ -6840,62 +5735,14 @@ async function _streamInner({ id, quality }) {
        ③ 还不行就换一条同曲的 YouTube 上传版本再试
      MyGo 原生播不了 YouTube 的任何音频格式（详见上面 ffmpeg 段注释）。 */
   if (s.startsWith("yt:")) {
+    /* YouTube 源已移除（内地网络访问不到）。旧收藏/历史里的 yt: 条目
+       只剩一条路：拿缓存元数据去内地平台找同曲，找不到就直说。 */
     const meta = trackMeta.get(s);
-
-    // ① 跨平台同名曲
     if (meta && meta.name) {
-      trace("① 试跨平台同名曲", meta.name);
       const cross = await tryMainlandByName(meta.name, meta.artist);
-      if (cross) {
-        trace("① 跨平台成功", cross.url);
-        return cross;
-      }
-      trace("① 跨平台无结果");
-    } else {
-      trace("① 无元数据，跳过跨平台", s);
+      if (cross) return cross;
     }
-
-    // ② ffmpeg 转码
-    const viaFfmpeg = async (videoId) => {
-      try {
-        trace("② 取 YouTube 流", videoId);
-        const st = await ytStream(videoId);
-        if (!st || !st.url) {
-          trace("② ytStream 无 url");
-          return null;
-        }
-        trace("② 起 ffmpeg", st.url.slice(0, 60));
-        const served = await serveWithFfmpeg(st.url, YT_ANDROID_UA, 128);
-        if (served) {
-          trace("② ffmpeg 成功", served.url);
-          return { url: served.url, type: "mp3" };
-        }
-        trace("② ffmpeg 失败");
-      } catch (e) {
-        const m2 = String((e && e.message) || e).slice(0, 120);
-        trace("② 异常", m2);
-        console.log("[葫芦] ffmpeg 转码失败: " + m2.slice(0, 80));
-      }
-      return null;
-    };
-
-    const videoId = s.slice(3);
-    const first = await viaFfmpeg(videoId);
-    if (first) return first;
-
-    // ③ 换一条同曲上传版本（retryOtherYoutubeUpload 内部已做 ffmpeg 转码）
-    try {
-      trace("③ 试换源");
-      const alt = await retryOtherYoutubeUpload(s, new Error("需要换源"));
-      if (alt) {
-        trace("③ 换源成功", alt.url);
-        return alt;
-      }
-      trace("③ 换源失败");
-    } catch {}
-
-    trace("✗ 全部失败");
-    throw fail("unavailable", "这首歌暂时找不到能播的音源");
+    throw fail("unavailable", "YouTube 源已移除，这条旧收藏无法播放");
   }
 
   /* B 站。
@@ -6997,8 +5844,6 @@ async function _streamInner({ id, quality }) {
       console.log("[葫芦] 网易云无版权/VIP（outer→404），转兜底");
     }
     // 无版权 / VIP / 格式怪 → 跨平台兜底到 YouTube
-    const alt = await fallbackToYoutube(id);
-    if (alt) return alt;
     throw fail("unavailable", "网易云无版权/VIP，且未找到替代音源");
   }
 
@@ -7179,8 +6024,6 @@ async function _streamInner({ id, quality }) {
       if (url) return { url, type: "mp3" };
     } catch {}
     // QQ 拿不到（VIP/下架）→ 跨平台兜底
-    const alt = await fallbackToYoutube(id);
-    if (alt) return alt;
     throw fail("unavailable", "QQ 音乐地址获取失败");
   }
 
@@ -7198,100 +6041,13 @@ async function _streamInner({ id, quality }) {
     const hit = await pickPlayable(candidates);
     if (hit) return { url: hit.url, type: hit.type, headers: hit.headers };
     // 酷我的 mp3 是 MP2/free-format 之类的非法编码 → 跨平台兜底
-    const alt = await fallbackToYoutube(id);
-    if (alt) return alt;
     throw fail("unavailable", "酷我音频格式不兼容");
   }
 
   throw fail("unavailable", "无法识别曲目");
 }
 
-/** 用缓存的曲目元数据去 YouTube 找同曲，兜底播放（YouTube 只有 webm，最稳） */
-async function fallbackToYoutube(id) {
-  const meta = trackMeta.get(String(id));
-  if (!meta || !meta.name) return null;
-  try {
-    const kw = meta.artist ? meta.name + " " + meta.artist : meta.name;
-    const list = await ytSearch(kw);
-    if (!list || !list.length) return null;
 
-    /* ⚠️ 选版本的原则：**官方 - Topic 频道优先，且时长必须对得上**。
-       踩过的坑：陶喆《Melody》在网易云是 VIP（播放不了），兜底到 YouTube
-       时选到了《Melody (Live)》—— Live 版比录音室版长 26 秒，前奏也不一样，
-       结果歌词和音频完全错位，用户一眼看出来「歌词比歌快」。
-       Topic 频道是唱片公司直传的发行版，版本一定和专辑一致，所以给最高分；
-       时长差超过 20 秒的直接淘汰（Live/现场/加长版都会差这么多）。 */
-    const wantSec = Math.round((Number(meta.duration) || 0) / 1000);
-    const ranked = list
-      .map((t) => {
-        const isTopic = /-\s*Topic$/i.test(t.artist || "");
-        const sec = parseDur(t.durationText) / 1000;
-        const durDiff = wantSec > 0 && sec > 0 ? Math.abs(sec - wantSec) : -1;
-        let sc = 0;
-        if (isTopic) sc += 1000; // 官方发行音轨，压倒性优先
-        if (normTitle(t.title).indexOf(normTitle(meta.name)) >= 0) sc += 100;
-        // 时长越接近越好；差 > 20 秒的扣到负分（等价于淘汰）
-        if (durDiff >= 0) {
-          if (durDiff <= 3) sc += 200;
-          else if (durDiff <= 10) sc += 80;
-          else if (durDiff > 20) sc -= 500;
-        }
-        // 标题带 Live/现场/翻唱/伴奏的压下去（Topic 频道豁免）
-        if (!isTopic && /live|现场|現場|演唱会|演唱會|cover|翻唱|伴奏|instrumental|remix/i.test(t.title || ""))
-          sc -= 300;
-        return { t, sc };
-      })
-      .sort((a, b) => b.sc - a.sc);
-    // 全被扣成负分说明没找到像样的版本，宁可失败也别播错
-    if (!ranked.length || ranked[0].sc < 0) {
-      console.log("[葫芦] YouTube 无合适的同曲版本，放弃兜底");
-      return null;
-    }
-    console.log(
-      "[葫芦] 兜底选版: " +
-        ranked[0].t.title.slice(0, 30) +
-        " (" +
-        ranked[0].t.artist +
-        ") sc=" +
-        ranked[0].sc
-    );
-    const st = await ytStream(ranked[0].t.id);
-    if (!st || !st.url) return null;
-    console.log("[葫芦] 跨平台兜底到 YouTube：" + meta.name);
-    /* ⚠️ 不能直接返回 YouTube 的原始链接 —— 那是 webm/Opus，
-       MyGo 没有 EBML 解析器，播不了（报 mp3: is_pos was too big）。
-       必须让 ffmpeg 转成 mp3 再从本地端口流出去。 */
-    const served = await serveWithFfmpeg(st.url, YT_ANDROID_UA, 128);
-    if (served) {
-      /* ⚠️ 兜底成功后把**实际选中的那个版本**写回元数据缓存。
-         为什么：音频和歌词必须来自同一个版本。
-         原来 meta 里存的是网易云那条的时长（录音室版 269s），
-         但实际播的是 YouTube 选中的版本；如果选中的是 Live 版，
-         歌词按 269s 的时间轴走就会整体错位。
-         把真实版本的歌名/时长/歌手覆盖进去，之后 lrclib() 和
-         网易云反查都会按这个版本去找，两边就对齐了。 */
-      try {
-        const picked = ranked[0].t;
-        // parseDur 返回的是**毫秒**，这里要秒
-        const pickedSec = Math.round(parseDur(picked.durationText) / 1000);
-        trackMeta.set(String(id), {
-          ...(meta || {}),
-          name: cleanSongTitle(picked.title || meta.name, picked.artist || meta.artist || ""),
-          artist: cleanArtistName(picked.artist || meta.artist || ""),
-          duration: pickedSec > 0 ? pickedSec * 1000 : meta.duration, // 存回毫秒
-          // YouTube 频道名不可信，但 Topic 频道是官方发行版，可以信
-          artistTrusted: /-\s*Topic$/i.test(picked.artist || ""),
-          servedFrom: "youtube",
-        });
-        console.log("[葫芦] 已同步歌词版本: " + cleanSongTitle(picked.title || "") + " / " + pickedSec + "s");
-      } catch {}
-      return { url: served.url, type: "mp3" };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 function guessType(url) {
   const lower = String(url).toLowerCase();
@@ -7476,7 +6232,7 @@ async function todayMix() {
   const searched = await Promise.all(
     seedInfo.map((x) =>
       Promise.all([
-        ytSearch(x.kw).catch(() => []),
+        Promise.resolve([]), // YouTube 源已移除
         biliSearch(x.kw, 6).catch(() => []),
         kuwoSearch(x.kw).catch(() => []),
       ])
@@ -7615,7 +6371,7 @@ async function catMix(c, slot = 0) {
   const searched = await Promise.all(
     seedInfo.map((x) =>
       Promise.all([
-        ytSearch(x.kw).catch(() => []),
+        Promise.resolve([]), // YouTube 源已移除
         biliSearch(x.kw, 5).catch(() => []),
         kuwoSearch(x.kw).catch(() => []),
       ])

@@ -1,5 +1,34 @@
 # 开发笔记
 
+## 1.2.9 · 移除 YouTube 源
+
+内地网络访问不到 YouTube，整条源已被删除（不是「保留但默认关闭」）。
+
+删掉的东西：
+- `index.js` 里 770 行 YouTube 模块：`ytBoot` / `ytCtx` / `ytHeaders` / `ytBrowse` /
+  `ytChannelPlaylists` / `ytPlaylistTracks` / `ytArtistSongs` / `ytSafeQueries` /
+  `ytSearchMulti` / `ytSearch` / `ytStream`，以及 `YTM_UA` / `YT_VISIONOS` /
+  `YT_ANDROID_*` / `YT_SEARCH_PARAMS` 常量
+- 搜索混排里的 YouTube 分支、歌手页的 `yda:` 兜底、专辑页的 `ydalb:` 虚拟专辑
+- `stream` 的 `yt:` 取流分支、`retryOtherYoutubeUpload`、`fallbackToYoutube`
+- `suggest` 的「YouTube:」入口、`SOURCE_PREFIX` 的 `yt:` / `youtube:` / `油管:`
+- `plugin.json` 网络白名单里的 `*.youtube.com` / `*.ytimg.com` /
+  `*.googlevideo.com` / `*.googleapis.com`
+
+保留的处理：
+- 旧收藏/历史里的 `yt:` 条目不再报 ReferenceError，改成先拿缓存元数据去内地平台
+  找同曲，找不到就明确说「YouTube 源已移除，这条旧收藏无法播放」
+- `suggest` 顺手补上了「QQ:」入口（之前搜得到但建议里没有）
+
+代价（已和用户确认）：下架歌手（李志 / 赵薇 / 阴三儿 / 脆弱少女组…）不再有 YouTube
+兜底，命中名单时只剩 B站/内地残留结果；B站也没结果时才让内地平台条目顶上。
+
+顺带发现并修掉的两个坑（删的时候踩出来的）：
+1. `fetchText` / `durToMs` / `parseDur` 这三个**通用函数**原本夹在 YouTube 章节里，
+   整段删除时会一起没掉 —— 表现为全站请求报 `fetchText is not defined`、搜索 0 结果。
+   现已恢复到 B 站章节前。
+2. 首页 `home()` 冷启动从 14.3 秒降到 7.6 秒（少了 56 个 YouTube 并发里的那部分）。
+
 ## 1.2.4（电台「播不了」的两处根因）
 
 1. **直播流探测不能 `arrayBuffer()`**。直播台永远不会结束，服务端若不认 Range
