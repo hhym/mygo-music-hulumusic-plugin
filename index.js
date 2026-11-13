@@ -6982,6 +6982,15 @@ async function _streamInner({ id, quality }) {
         const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
         if (served) return { url: served.url, type: "mp3" };
         trace("rd 头部不干净且转码没起来", String(probe.bytes || 0) + "B");
+        /* ⚠️ 这种流不能就这么丢给解码器（开头是 ICY 元数据块，例如
+           lhttp.qingting.fm/live/4915/64k.mp3 第一个字节就是 0x11 元数据长度），
+           丢过去的结果就是一句「这首歌无法播放」，用户完全不知道是 ffmpeg 没就绪。
+           这里抛普通 Error（不带 unavailable 之类的码）：MyGo 对未知错误
+           会把 message 原样显示在播放栏，正好把原因告诉用户。 */
+        throw new Error(
+          "这个台的音频开头带 ICY 元数据（不是纯音频），必须用 ffmpeg 转码播放。" +
+          "本机没找到可用的 ffmpeg：请在插件设置里填「ffmpeg 路径」，或允许插件下载 ffmpeg 后重试。"
+        );
       }
       if (probe.fmt === "aac") {
         const served = await serveWithFfmpeg(url, uaDesktop(), 128).catch(() => null);
