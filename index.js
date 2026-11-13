@@ -1,4 +1,4 @@
-// 葫芦音源 · MyGo 原生插件 v3
+// 葫芦音乐 · MyGo 原生插件 v3
 // 聚合三大平台：网易云 · YouTube · 酷我（Kuwo）。
 // 搜索各平台并发打，取流走各来源直链 + 跨平台兜底。
 // 全部用 MyGo 沙箱原生 fetch（含 HTTP 302 跟随）。
@@ -8505,9 +8505,9 @@ export async function home() {
   });
 
   if (!sections.length) {
-    sections.push({ title: "葫芦音源", empty: "先去搜索页找首歌吧" });
+    sections.push({ title: "葫芦音乐", empty: "先去搜索页找首歌吧" });
   }
-  return { title: "葫芦音源", sections };
+  return { title: "葫芦音乐", sections };
 }
 
 export async function browse({ page }) {

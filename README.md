@@ -1,4 +1,4 @@
-# 葫芦音源 · MyGo 插件
+# 葫芦音乐 · MyGo 插件
 
 聚合多个音乐源的 [MyGo](https://github.com/egoist/mygo-music) 音源插件。跨平台源聚合、相互兜底，主流 App 找不到的曲目也能在这里补齐。
 
