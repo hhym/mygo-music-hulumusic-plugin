@@ -30966,7 +30966,10 @@ const t = (text) => host.t(text);
 const BY_ID = {};
 for (const item of SRC_LIST) BY_ID[item.id] = item;
 
-const ICON = "https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu-music-v2.png";
+const ICON = "https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu-music-v3.png";
+
+// 源自己没给图（曲目封面、专辑、歌手、歌单、链接）时，统一兜一张葫芦图标，不留空白音符占位
+const withIcon = (item) => (item && !item.imageUrl ? Object.assign({}, item, { imageUrl: ICON }) : item);
 
 const CAT_ORDER = ["音乐", "DJ音乐", "听书", "评书"];
 const CATS = CAT_ORDER.map((name) => ({ name: name, list: SRC_LIST.filter((src) => src.cat === name) })).filter(
@@ -31003,6 +31006,7 @@ function wrapTrack(track, src) {
   const album = Object.assign({}, track.album || {});
   album.name = track.album && track.album.name ? src.name + " · " + track.album.name : src.name;
   copy.album = album;
+  if (!copy.imageUrl) copy.imageUrl = ICON;
   return copy;
 }
 
@@ -31013,6 +31017,7 @@ function wrapTracks(tracks, src) {
 function wrapLink(link, src) {
   const copy = Object.assign({}, link);
   if (copy.page) copy.page = enc(src.id, copy.page);
+  if (!copy.imageUrl) copy.imageUrl = ICON;
   return copy;
 }
 
@@ -31031,13 +31036,13 @@ function wrapPage(page, src) {
   }
   if (page.album && page.album.id) out.album = Object.assign({}, page.album, { id: enc(src.id, page.album.id) });
   if (Array.isArray(page.albums)) {
-    out.albums = page.albums.map((item) => Object.assign({}, item, { id: enc(src.id, item.id) }));
+    out.albums = page.albums.map((item) => withIcon(Object.assign({}, item, { id: enc(src.id, item.id) })));
   }
   if (Array.isArray(page.artists)) {
-    out.artists = page.artists.map((item) => Object.assign({}, item, { id: enc(src.id, item.id) }));
+    out.artists = page.artists.map((item) => withIcon(Object.assign({}, item, { id: enc(src.id, item.id) })));
   }
   if (Array.isArray(page.playlists)) {
-    out.playlists = page.playlists.map((item) => Object.assign({}, item, { id: enc(src.id, item.id) }));
+    out.playlists = page.playlists.map((item) => withIcon(Object.assign({}, item, { id: enc(src.id, item.id) })));
   }
   return out;
 }

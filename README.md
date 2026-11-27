@@ -3,7 +3,7 @@
 葫芦音乐 2.0 起，把 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件合成这一个插件，取代 1.x 那套网易云 / B 站 / 酷我 / QQ / 播客音源。结构还是本仓库原来的样子：一份 `plugin.json`、一个 `index.js`、没有构建。
 
 - 插件 id：`hulu-music`
-- 版本：2.0.3（`minAppVersion` 0.1.20）
+- 版本：2.0.4（`minAppVersion` 0.1.20）
 - 播放方式：`stream`
 
 ## 怎么用
@@ -89,9 +89,10 @@ track / 页面的 id 统一编成 `<源 id>:<源内 id>`，聚合层拆前缀分
 
 ## 图标
 
-源列表、分类入口统一挂葫芦听音乐图标（`icon.png` 192×192，源列表那张由
-[mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 的 `assets/hulu-music-v2.png` 经 jsdelivr 分发），
-源自己没有 logo 时不再是一片空白；插件页的卡片图也用这张。
+源列表、分类入口、插件卡片，以及**源没给封面的曲目行**，统一挂葫芦听音乐图标
+（`icon.png` 192×192；源列表与曲目行那张由 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins)
+的 `assets/hulu-music-v3.png` 经 jsdelivr 分发）。聚合层在 `wrapTrack` / `wrapLink` 里兜底：
+源的 track、link、album、artist、playlist 没带 `imageUrl`，就换成这张图，不再出现空白音符占位。
 
 ## 国内装不上怎么办
 
@@ -99,7 +100,7 @@ App 的在线更新直接拉 GitHub Release 资产，国内常常连不通（`di
 把 zip 存一份在 `dist/`，jsdelivr 可以直连：
 
 ```bash
-curl -LO https://cdn.jsdelivr.net/gh/hhym/mygo-music-hulumusic-plugin@main/dist/hulu-music-2.0.3.zip
+curl -LO https://cdn.jsdelivr.net/gh/hhym/mygo-music-hulumusic-plugin@main/dist/hulu-music-2.0.4.zip
 ```
 
 下完用 App 里「+ → 从本机 zip 安装」装上，功能一样；系统代理开着的话在线更新也会照常工作。
@@ -110,5 +111,5 @@ curl -LO https://cdn.jsdelivr.net/gh/hhym/mygo-music-hulumusic-plugin@main/dist/
 `tools/build-allinone.mjs` 生成，本仓库只存产物：
 
 ```bash
-node tools/build-allinone.mjs --out /tmp/hulu --id hulu-music --name 葫芦音乐 --version 2.0.3 --icon assets/hulu-music-v2.png
+node tools/build-allinone.mjs --out /tmp/hulu --id hulu-music --name 葫芦音乐 --version 2.0.4 --icon assets/hulu-music-v3.png
 ```
