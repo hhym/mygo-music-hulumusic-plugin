@@ -1,14 +1,14 @@
 # 葫芦音乐 · 54 个源聚合在一个插件
 
-把 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件合成一个插件，结构还是本仓库原来的样子：一份 `plugin.json`、一个 `index.js`，没有构建步骤。
+葫芦音乐 2.0 起，把 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件合成这一个插件，取代 1.x 那套网易云 / B 站 / 酷我 / QQ / 播客音源。结构还是本仓库原来的样子：一份 `plugin.json`、一个 `index.js`、没有构建。
 
 - 插件 id：`hulu-music`
-- 版本：2.0.2（`minAppVersion` 0.1.20）
+- 版本：2.0.3（`minAppVersion` 0.1.20）
 - 播放方式：`stream`
 
 ## 怎么用
 
-侧栏首页之后就是四个分类，点进去是该分类下的源（音乐 28 / DJ 音乐 2 / 听书 21 / 评书 3）；进某个源就是它原来的首页，曲目、歌单、专辑、搜索全按源自己的逻辑走。
+首页之后就是四个分类（音乐 28 / DJ 音乐 2 / 听书 21 / 评书 3），点进去是该分类下的源；进某个源就是它原来的首页，曲目、歌单、专辑、搜索全按源自己的逻辑走。
 
 track / 页面的 id 统一编成 `<源 id>:<源内 id>`，聚合层拆前缀分发；每个源的 `host.storage`、`host.setting` 都加了前缀，收藏与历史互不串味。
 
@@ -89,16 +89,26 @@ track / 页面的 id 统一编成 `<源 id>:<源内 id>`，聚合层拆前缀分
 
 ## 图标
 
-源列表与分类入口统一用葫芦图标（`assets/hulu-music.png`，192×192），经 jsdelivr 分发：
-`https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu-music.png`，`permissions.network` 里已放行 `cdn.jsdelivr.net`。源自己带封面的仍用源自己的。
+源列表、分类入口统一挂葫芦听音乐图标（`icon.png` 192×192，源列表那张由
+[mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 的 `assets/hulu-music-v2.png` 经 jsdelivr 分发），
+源自己没有 logo 时不再是一片空白；插件页的卡片图也用这张。
+
+## 国内装不上怎么办
+
+App 的在线更新直接拉 GitHub Release 资产，国内常常连不通（`dial tcp …:443: i/o timeout`）。
+把 zip 存一份在 `dist/`，jsdelivr 可以直连：
+
+```bash
+curl -LO https://cdn.jsdelivr.net/gh/hhym/mygo-music-hulumusic-plugin@main/dist/hulu-music-2.0.3.zip
+```
+
+下完用 App 里「+ → 从本机 zip 安装」装上，功能一样；系统代理开着的话在线更新也会照常工作。
 
 ## 来源与重新生成
 
-`index.js` 是自动生成的聚合产物，源头是 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件目录。那边有构建器：
+源都在 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins)，聚合层由那个仓库的
+`tools/build-allinone.mjs` 生成，本仓库只存产物：
 
 ```bash
-# 在 mygo-music-plugins 仓库里
-node tools/build-allinone.mjs --out /tmp/hulu-new --id hulu-music --name 葫芦音乐 --version <新版本>
+node tools/build-allinone.mjs --out /tmp/hulu --id hulu-music --name 葫芦音乐 --version 2.0.3 --icon assets/hulu-music-v2.png
 ```
-
-然后把 `plugin.json` / `index.js` / `README.md` / `locales/` 覆盖到本仓库，打 tag 发 release。别在本仓库手改 `index.js`，下次生成会被冲掉。
