@@ -3,7 +3,7 @@
 把 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件合成一个插件，结构还是本仓库原来的样子：一份 `plugin.json`、一个 `index.js`，没有构建步骤。
 
 - 插件 id：`hulu-music`
-- 版本：2.0.1（`minAppVersion` 0.1.20）
+- 版本：2.0.2（`minAppVersion` 0.1.20）
 - 播放方式：`stream`
 
 ## 怎么用
@@ -89,8 +89,8 @@ track / 页面的 id 统一编成 `<源 id>:<源内 id>`，聚合层拆前缀分
 
 ## 图标
 
-源列表与分类入口统一用葫芦图标（`assets/hulu.png`，128×128），经 jsdelivr 分发：
-`https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu.png`，`permissions.network` 里已放行 `cdn.jsdelivr.net`。源自己带封面的仍用源自己的。
+源列表与分类入口统一用葫芦图标（`assets/hulu-music.png`，192×192），经 jsdelivr 分发：
+`https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu-music.png`，`permissions.network` 里已放行 `cdn.jsdelivr.net`。源自己带封面的仍用源自己的。
 
 ## 来源与重新生成
 

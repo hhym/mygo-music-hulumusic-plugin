@@ -30966,7 +30966,7 @@ const t = (text) => host.t(text);
 const BY_ID = {};
 for (const item of SRC_LIST) BY_ID[item.id] = item;
 
-const ICON = "https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu.png";
+const ICON = "https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu-music.png";
 
 const CAT_ORDER = ["音乐", "DJ音乐", "听书", "评书"];
 const CATS = CAT_ORDER.map((name) => ({ name: name, list: SRC_LIST.filter((src) => src.cat === name) })).filter(
