@@ -3,7 +3,7 @@
 把 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件合成一个插件，结构还是本仓库原来的样子：一份 `plugin.json`、一个 `index.js`，没有构建步骤。
 
 - 插件 id：`hulu-music`
-- 版本：2.0.0（`minAppVersion` 0.1.20）
+- 版本：2.0.1（`minAppVersion` 0.1.20）
 - 播放方式：`stream`
 
 ## 怎么用
@@ -87,9 +87,14 @@ track / 页面的 id 统一编成 `<源 id>:<源内 id>`，聚合层拆前缀分
 - 只有部分源带专辑 / 歌手 / 歌单接口，对应页面按源能力显示，缺的源点了会提示没有。
 - 需要 ffmpeg 转码的那几个源（HE-AAC、Layer II、HLS）依赖 `permissions.process`，聚合后统一在插件设置里配置。
 
+## 图标
+
+源列表与分类入口统一用葫芦图标（`assets/hulu.png`，128×128），经 jsdelivr 分发：
+`https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu.png`，`permissions.network` 里已放行 `cdn.jsdelivr.net`。源自己带封面的仍用源自己的。
+
 ## 来源与重新生成
 
-`index.js` 是自动生成的聚合产物，源头是 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件目录。那边有构建器，改完源插件在那里重跑即可：
+`index.js` 是自动生成的聚合产物，源头是 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件目录。那边有构建器：
 
 ```bash
 # 在 mygo-music-plugins 仓库里

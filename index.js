@@ -30966,6 +30966,8 @@ const t = (text) => host.t(text);
 const BY_ID = {};
 for (const item of SRC_LIST) BY_ID[item.id] = item;
 
+const ICON = "https://cdn.jsdelivr.net/gh/hhym/mygo-music-plugins@main/assets/hulu.png";
+
 const CAT_ORDER = ["音乐", "DJ音乐", "听书", "评书"];
 const CATS = CAT_ORDER.map((name) => ({ name: name, list: SRC_LIST.filter((src) => src.cat === name) })).filter(
   (cat) => cat.list.length
@@ -31114,7 +31116,7 @@ function catPage(name) {
     sections: [
       {
         title: "源列表",
-        links: list.map((src) => ({ title: src.name, subtitle: src.description, page: "src:" + src.id })),
+        links: list.map((src) => ({ title: src.name, subtitle: src.description, page: "src:" + src.id, imageUrl: ICON })),
       },
     ],
   };
@@ -31127,7 +31129,7 @@ function catsPage() {
     sections: [
       {
         title: "分类",
-        links: CATS.map((cat) => ({ title: cat.name, subtitle: cat.list.length + " 个源", page: "cat:" + cat.name })),
+        links: CATS.map((cat) => ({ title: cat.name, subtitle: cat.list.length + " 个源", page: "cat:" + cat.name, imageUrl: ICON })),
       },
     ],
   };
@@ -31170,7 +31172,7 @@ export async function home() {
   const sections = [
     {
       title: "分类",
-      links: CATS.map((cat) => ({ title: cat.name, subtitle: cat.list.length + " 个源", page: "cat:" + cat.name })),
+      links: CATS.map((cat) => ({ title: cat.name, subtitle: cat.list.length + " 个源", page: "cat:" + cat.name, imageUrl: ICON })),
     },
   ];
   for (const section of got) if (section) sections.push(section);
@@ -31178,7 +31180,7 @@ export async function home() {
   if (sections.length <= 1) {
     sections.push({
       title: "源列表",
-      links: SRC_LIST.slice(0, 12).map((src) => ({ title: src.name, subtitle: src.description, page: "src:" + src.id })),
+      links: SRC_LIST.slice(0, 12).map((src) => ({ title: src.name, subtitle: src.description, page: "src:" + src.id, imageUrl: ICON })),
     });
   }
 
