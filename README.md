@@ -1,113 +1,99 @@
-# 葫芦音乐 · MyGo 插件
+# 葫芦音乐 · 54 个源聚合在一个插件
 
-聚合多个音乐源的 [MyGo](https://github.com/egoist/mygo-music) 音源插件。跨平台源聚合、相互兜底，主流 App 找不到的曲目也能在这里补齐。
+把 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件合成一个插件，结构还是本仓库原来的样子：一份 `plugin.json`、一个 `index.js`，没有构建步骤。
 
-本项目基于 [@ZONGZI-000](https://github.com/ZONGZI-000) 的 [zongzi-mygo-plugin-beta](https://github.com/ZONGZI-000/zongzi-mygo-plugin-beta) 二次开发，在此致谢。
+- 插件 id：`hulu-music`
+- 版本：2.0.0（`minAppVersion` 0.1.20）
+- 播放方式：`stream`
 
-## 功能
+## 怎么用
 
-| 模块 | 说明 |
-|---|---|
-| 搜索 | 单曲 / 歌手 / 专辑 / 歌单 / 播客，多源并发合并去重 |
-| 首页 | 华语精选、欧美精选、新歌速递、下架歌手入口 |
-| 歌单 | 自建歌单、我喜欢、收藏 |
-| 歌手页 | 云音乐歌手目录（内地库为主） |
-| 专辑页 | 云音乐歌手目录 + B站/酷我补充 |
-| 播客 | 41 个分类，播客小镇 + Apple Podcasts + 云音乐电台三源合并 |
-| QQ 音乐 | 独立入口：榜单分组（巅峰/地区/特色/全球）、歌单、专辑、歌手页与歌词，免登录 |
+侧栏首页之后就是四个分类，点进去是该分类下的源（音乐 28 / DJ 音乐 2 / 听书 21 / 评书 3）；进某个源就是它原来的首页，曲目、歌单、专辑、搜索全按源自己的逻辑走。
 
-## 数据源
+track / 页面的 id 统一编成 `<源 id>:<源内 id>`，聚合层拆前缀分发；每个源的 `host.storage`、`host.setting` 都加了前缀，收藏与历史互不串味。
 
-> 直播电台（RoamDial / SomaFM / 蜻蜓系）已在 1.3.0 移除；播客与点播不受影响。
+## 源清单（54 个）
 
-- **云音乐** — 搜索、歌单、歌手目录、电台节目
-- **酷我** — 搜索与取流
-- **Apple Podcasts** — 播客搜索与歌手头像
-- **播客小镇 (podtown.xyz)** — 266 个中文播客，自带 RSS
-- **QQ 音乐** — 搜索（单曲混排 + 专辑/歌手/歌单补充）、专辑 `qqa:` / 歌手 `qqr:` / 歌单 `qqp:` / 榜单 `qqc:` / 歌词，匿名接口，付费曲目自动兜底到内地平台同曲
+### 音乐（28 个）
 
-## 设置
+- **世纪音乐** `4c44-music` — 世纪音乐（www.4c44.com）的歌曲、榜单、歌单与动态歌词。
+- **5nd音乐** `5nd-music` — 5nd音乐网的歌曲、榜单、歌手与专辑，带动态歌词。
+- **凤梨音乐** `flmp3-music` — 凤梨音乐网（flmp3.pro）的歌曲、音乐合集与在线试听，带歌词。
+- **优折美音乐** `uzz-music` — 优折美在线音乐播放器（m.uzz.me）的音源，网易云曲库的搜索、歌单与试听。
+- **汽车音乐网** `carsmp3-music` — 汽车音乐网（www.carsmp3.com）的无损车载专辑目录，附网易云匹配试听。
+- **闪闪音乐** `33ve` — 
+- **5sing** `5sing` — 
+- **动感酷音乐** `dgcol` — 
+- **GD音乐台** `gdstudio` — 
+- **好听轻音乐** `htqyy` — 
+- **米乐迪音乐** `imelody` — 
+- **米粒音乐** `milimusic` — 
+- **无名音乐** `mvmp3` — 
+- **小蜜蜂音乐** `xmfwav` — 
+- **VY音乐** `yyvy` — 
+- **听听网** `tingting` — 
+- **九天音乐** `nine-sky` — 
+- **布谷音乐** `buguyy-music` — 布谷音乐的热歌、新歌与搜索，320kbps mp3 直接播放，带 LRC 歌词。
+- **一起听歌吧** `jusic-room` — 只读跟随 Jusic 听歌房（happy.alang.run）：房间正在播放和待播队列同步到这，能直接播；搜索可浏览房间里的曲目。
+- **糖豆音乐** `tangdou` — 
+- **广场舞地盘** `gcwdp` — 广场舞地盘的舞曲库、最新舞曲、交谊舞曲与轻音乐，站内试听地址现取现播。
+- **IN音乐网** `inmp3` — IN音乐网（inmp3.com）的热门歌曲、分类榜单、搜索与在线试听。
+- **放屁网** `fangpiw` — 放屁网（fangpiw.com）的热门珍藏、搜索与 MP3 试听片段。
+- **7082音乐网** `music7082` — 7082音乐网（www.7082.cn）的原创音乐、分类、排行榜、搜索与 MP3 在线播放。
+- **无忧音乐网** `ting05` — 无忧音乐网（ting05.com）的音乐首页、分类、搜索、歌曲详情与 m4a 在线播放。
+- **番茄音乐** `fanqie-music` — 
+- **大米饭** `damifan-music` — 大米饭的推荐、随机、标签、歌单与搜索，曲库上万首，320kbps mp3 直接播放。
+- **24bit无损音乐** `24bit` — 
 
-| 设置项 | 说明 |
-|---|---|
-| 代理地址 | 留空默认 `127.0.0.1:7890`，不用代理填 `0` |
-| 转码播放 | 留空或 `1` 开启。HE-AAC(SBR)、MPEG Layer II、HLS 这些播放器解不了的内容会用本机 ffmpeg 实时转 mp3。填 `0` 关闭：直接播原地址，多数会报 `go-aac/pcm: SBR` 或 `only layer3` 错误 |
-| ffmpeg 路径 | 留空自动查找：插件自带 `bin/` → PATH → `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`、`/snap/bin`、`C:\ffmpeg\bin` 等常见位置。也可以填完整路径，如 `C:\ffmpeg\bin\ffmpeg.exe` |
+### DJ音乐（2 个）
 
-首次转码时如果找不到 ffmpeg，插件会自动下载一份到 `bin/`（约 78MB）。
+- **DJ024电音** `dj024-music` — 沈阳DJ024电音传媒（www.dj024.com）的DJ舞曲、串烧与现场，带独家试听。
+- **36DJ舞曲** `36dj-music` — 36DJ舞曲网（www.36dj.com）的DJ舞曲、串烧与车载大碟，含中文、英文、慢摇分类与人气榜。
 
-## 播放相关
+### 听书（21 个）
 
-MyGo 的解码器限制很死，踩过不少：
+- **猫耳FM** `missevan-music` — 猫耳FM（missevan.com）的广播剧、音乐音单与声音搜索，音单里的曲目可试听；可选按节目名到蜻蜓FM 找同名音频。
+- **听书网** `tingshuwang-music` — 听书网（www.tingshuwang.cc）的有声小说：玄幻武侠、都市言情、恐怖悬疑等分类，按书籍收听全本章节。
+- **恋听网** `ting55` — 
+- **275听书** `i275` — 
+- **听FM电台** `tingfm` — 
+- **悦听吧** `yuetingba` — 
+- **85听书网** `85ting` — 
+- **环球听书** `hqkomics` — 
+- **更快听书** `gkbasic` — 
+- **爱上听书** `kmbas` — 
+- **59听书** `ting59` — 
+- **三九听书** `sanjiuwang` — 
+- **瓜播听书** `guabo` — 
+- **伊薇听书** `eweizhi` — 
+- **一一听书** `eyihu` — 
+- **我爱听书** `ipangxie` — 
+- **幻听听书** `q062` — 
+- **听友听书** `tingyou` — 
+- **石头听书** `shitou` — 
+- **易听书网** `yitingshu` — 易听书网（yitingshu.com）的有声小说、分类、搜索、专辑与章节播放。
+- **99听书网** `ting99` — 99听书网（ting99.com）的有声小说、分类、搜索、专辑与章节播放。
 
-- 只认 `mp3 / flac / ogg / wav / m4a / aac`，传别的会被当 mp3 解码后报错
-- mp3 解码器（`hajimehoshi/go-mp3`）**只支持 MPEG Layer III**，Layer I/II 会报 `only layer3 is supported`
-- **不支持 HE-AAC (SBR+PS)** → 播客 m4a 必须用 ffmpeg 转 mp3
+### 评书（3 个）
 
-## 安装
+- **单田芳评书网** `pingshu5` — 
+- **我听评书网** `qmtsw` — 我听评书网（qmtsw.com）的评书分类、搜索、专辑章节与在线播放。
+- **娓雅评书** `wpingshu` — 
 
-### 直接下载 zip（推荐）
+## 已知取舍
 
-最新版地址**固定不变**，出什么新版本都是这个链接：
+- 首页只取 4 个代表源各一段，其余源都在分类页里，不再逐个拉首页，免得一进来就发几十个请求。
+- 搜索按并发池同时打多个源（限并发，单源超时即放弃），结果是各源命中的合并，`album.name` 里标了来源。
+- 只有部分源带专辑 / 歌手 / 歌单接口，对应页面按源能力显示，缺的源点了会提示没有。
+- 需要 ffmpeg 转码的那几个源（HE-AAC、Layer II、HLS）依赖 `permissions.process`，聚合后统一在插件设置里配置。
 
-```
-https://github.com/hhym/mygo-music-hulumusic-plugin/releases/latest/download/hulu-music-latest.zip
-```
+## 来源与重新生成
 
-解压到 `%APPDATA%\MyGo Music\plugins\hulu-music\` 即可。历史版本在 [Releases](https://github.com/hhym/mygo-music-hulumusic-plugin/releases) 里按版本号归档。
-
-### 从源码装
+`index.js` 是自动生成的聚合产物，源头是 [mygo-music-plugins](https://github.com/hhym/mygo-music-plugins) 里的 54 个单站插件目录。那边有构建器，改完源插件在那里重跑即可：
 
 ```bash
-git clone https://github.com/hhym/mygo-music-hulumusic-plugin.git \
-  "$APPDATA/MyGo Music/plugins/hulu-music"
+# 在 mygo-music-plugins 仓库里
+node tools/build-allinone.mjs --out /tmp/hulu-new --id hulu-music --name 葫芦音乐 --version <新版本>
 ```
 
-装完重启 MyGo。
-
-### ffmpeg
-
-`bin/`（ffmpeg 等平台二进制）不入库，首次用到转码时自动下载。有两点建议：
-
-- **最好自备 ffmpeg**：把可用的 `ffmpeg.exe` 放到 `bin/win32-amd64/` 下即可，插件会直接用，省掉 78MB 下载和出错的概率
-- 自动下载的源在 **GitHub release**，大陆网络可能连不上或很慢——如果一直卡在下载，挂代理，或干脆手动把 ffmpeg 放进上面的目录
-发版流程见 [RELEASING.md](RELEASING.md)。
-
-## 开发
-
-```bash
-node --check index.js      # 语法检查
-node test_all.cjs          # 跑测试（沙箱 mock 了 host 环境）
-./deploy.sh                # 部署到 MyGo（自动探测目录，也可传参）
-```
-
-`deploy.sh` 支持三种方式指定目标：
-
-```bash
-./deploy.sh                             # 自动探测
-./deploy.sh "/d/MyGo/plugins/xxx"       # 指定路径
-MYGO_PLUGIN_DIR=/some/dir ./deploy.sh   # 环境变量
-```
-
-⚠️ MyGo **只在启动时读插件**，部署完要重启才生效。
-
-## 结构
-
-```
-index.js                插件主逻辑（~7600 行）
-plugin.json             插件元信息 + 网络白名单
-locales/zh-CN.json      界面文案
-deploy.sh               部署脚本
-NOTES.md                MyGo 播放器硬限制备忘
-BANNED_ARTISTS.md       下架歌手整理
-```
-
-## 致谢
-
-这个插件不是从零写起的东西，它站在几个开源项目的肩上：
-
-- **[@ZONGZI-000](https://github.com/ZONGZI-000)** — [zongzi-mygo-plugin-beta](https://github.com/ZONGZI-000/zongzi-mygo-plugin-beta) 是本项目的起点：插件骨架、云音乐 / YouTube / 酷我 / B 站 / 播客的接入方式、ffmpeg 转码与播放器兼容性的那些坑，都出自这里。感谢作者把整套实现开源出来。
-
-## 说明
-
-仅供个人学习与自用。曲库信息来自各平台公开接口，不对内容做二次分发。
+然后把 `plugin.json` / `index.js` / `README.md` / `locales/` 覆盖到本仓库，打 tag 发 release。别在本仓库手改 `index.js`，下次生成会被冲掉。
